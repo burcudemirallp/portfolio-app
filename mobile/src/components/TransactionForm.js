@@ -29,12 +29,6 @@ import { getItem } from '../utils/storage';
 import { useTheme } from '../contexts/ThemeContext';
 import Toast from 'react-native-toast-message';
 
-const HORIZONS = [
-  { value: 'trade', label: 'Trade' },
-  { value: 'short', label: 'Kısa' },
-  { value: 'mid', label: 'Orta' },
-  { value: 'long', label: 'Uzun' },
-];
 
 const CURRENCIES = ['TRY', 'USD', 'EUR'];
 const PRESET_SECONDARY_TAGS = ['Temettü', 'Büyüme', 'Değer', 'Kısa Vade', 'Uzun Vade', 'Spekülatif'];
@@ -163,6 +157,7 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
   const [assetTypes, setAssetTypes] = useState(DEFAULT_ASSET_TYPES);
   const [markets, setMarkets] = useState(DEFAULT_MARKETS);
   const [availablePrimaryTags, setAvailablePrimaryTags] = useState([]);
+  const [availableSecondaryTags, setAvailableSecondaryTags] = useState([]);
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
   const [instrumentPickerOpen, setInstrumentPickerOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -186,6 +181,7 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
   });
   const [newBroker, setNewBroker] = useState({ name: '' });
   const [newAccount, setNewAccount] = useState({ name: '', broker_id: '', base_currency: 'TRY' });
+  const [primaryTagInput, setPrimaryTagInput] = useState('');
   const [secondaryTagInput, setSecondaryTagInput] = useState('');
   const isEditMode = !!editTransaction;
 
@@ -200,11 +196,18 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
       setInstruments(iRes.data || []);
       setAccounts(aRes.data || []);
       setBrokers(bRes.data || []);
-      const tags = new Set();
+      const pTags = new Set();
+      const sTags = new Set(PRESET_SECONDARY_TAGS);
       (tRes.data || []).forEach((t) => {
-        if (t.primary_tag) tags.add(t.primary_tag);
+        if (t.primary_tag) pTags.add(t.primary_tag);
+        const sec = t.secondary_tags;
+        if (sec) {
+          const arr = Array.isArray(sec) ? sec : String(sec).split(',');
+          arr.forEach((s) => { const v = s.trim(); if (v) sTags.add(v); });
+        }
       });
-      setAvailablePrimaryTags([...tags]);
+      setAvailablePrimaryTags([...pTags]);
+      setAvailableSecondaryTags([...sTags]);
       const savedAT = await getItem('portfolio_asset_types');
       if (savedAT) {
         try {
@@ -260,6 +263,7 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
     }
     setStep(1);
     setStepBackTarget(1);
+    setPrimaryTagInput('');
     setSecondaryTagInput('');
   }, [visible, editTransaction]);
 
@@ -271,6 +275,18 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
   const selectedSecondaryTags = formData.secondary_tags
     ? formData.secondary_tags.split(',').map((t) => t.trim()).filter(Boolean)
     : [];
+
+  const setPrimaryTag = (tag) => {
+    setFormData((f) => ({ ...f, primary_tag: tag }));
+    setPrimaryTagInput('');
+  };
+
+  const addCustomPrimaryTag = () => {
+    const t = primaryTagInput.trim();
+    if (!t) return;
+    setFormData((f) => ({ ...f, primary_tag: t }));
+    setPrimaryTagInput('');
+  };
 
   const toggleSecondaryTag = (tag) => {
     const next = selectedSecondaryTags.includes(tag)
@@ -478,38 +494,6 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
                 />
               </FormSection>
 
-              <FormSection title="Yatırım ufku" colors={colors}>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                  {HORIZONS.map((h) => {
-                    const on = formData.horizon === h.value;
-                    return (
-                      <TouchableOpacity
-                        key={h.value}
-                        onPress={() => setFormData((f) => ({ ...f, horizon: h.value }))}
-                        style={{
-                          paddingVertical: 10,
-                          paddingHorizontal: 14,
-                          borderRadius: 10,
-                          backgroundColor: on ? colors.accent : colors.surfaceAlt,
-                          borderWidth: 1,
-                          borderColor: on ? colors.accent : colors.border,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 13,
-                            fontWeight: '600',
-                            color: on ? '#0B0E11' : colors.textSec,
-                          }}
-                        >
-                          {h.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </FormSection>
-
               <FormSection title="Miktar, fiyat, komisyon" colors={colors}>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <View style={{ flex: 1 }}>
@@ -582,110 +566,90 @@ export default function TransactionForm({ visible, editTransaction, onClose, onS
               </FormSection>
 
               <FormSection title="Birincil etiket" colors={colors}>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-                  {availablePrimaryTags.map((tag) => {
-                    const on = formData.primary_tag === tag;
-                    return (
-                      <TouchableOpacity
-                        key={tag}
-                        onPress={() =>
-                          setFormData((f) => ({
-                            ...f,
-                            primary_tag: f.primary_tag === tag ? '' : tag,
-                          }))
-                        }
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: 10,
-                          backgroundColor: on ? colors.accent : colors.surfaceAlt,
-                          borderWidth: 1,
-                          borderColor: on ? colors.accent : colors.border,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 12,
-                            fontWeight: '600',
-                            color: on ? '#0B0E11' : colors.textSec,
-                          }}
-                        >
-                          {tag}
-                        </Text>
+                {formData.primary_tag ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+                    <View style={{
+                      flexDirection: 'row', alignItems: 'center',
+                      paddingLeft: 12, paddingRight: 6, paddingVertical: 7,
+                      borderRadius: 8, backgroundColor: 'rgba(240,185,11,0.15)',
+                      borderWidth: 1, borderColor: colors.accent,
+                    }}>
+                      <Text style={{ fontSize: 13, fontWeight: '600', color: colors.accent, marginRight: 8 }}>{formData.primary_tag}</Text>
+                      <TouchableOpacity onPress={() => setFormData((f) => ({ ...f, primary_tag: '' }))} hitSlop={8}>
+                        <Feather name="x-circle" size={16} color={colors.accent} />
                       </TouchableOpacity>
-                    );
-                  })}
+                    </View>
+                  </View>
+                ) : null}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                  {availablePrimaryTags.filter((t) => t !== formData.primary_tag).map((tag) => (
+                    <TouchableOpacity key={tag}
+                      onPress={() => setPrimaryTag(tag)}
+                      style={{
+                        paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+                        backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border,
+                      }}>
+                      <Text style={{ fontSize: 11, color: colors.textSec }}>{tag}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-                <TextInput
-                  value={formData.primary_tag}
-                  onChangeText={(v) => setFormData((f) => ({ ...f, primary_tag: v }))}
-                  placeholder="Özel etiket yazın..."
-                  placeholderTextColor={colors.textTer}
-                  style={inputStyle}
-                />
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  <TextInput
+                    value={primaryTagInput}
+                    onChangeText={setPrimaryTagInput}
+                    onSubmitEditing={addCustomPrimaryTag}
+                    placeholder="Yeni etiket yazın..."
+                    placeholderTextColor={colors.textTer}
+                    style={{ ...inputStyle, flex: 1, marginBottom: 0 }}
+                    returnKeyType="done"
+                  />
+                  <TouchableOpacity
+                    onPress={addCustomPrimaryTag}
+                    style={{
+                      paddingHorizontal: 14, paddingVertical: 12,
+                      borderRadius: 10, backgroundColor: colors.accent,
+                    }}>
+                    <Feather name="plus" size={18} color="#0B0E11" />
+                  </TouchableOpacity>
+                </View>
               </FormSection>
 
               <FormSection title="İkincil etiketler" colors={colors}>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-                  {PRESET_SECONDARY_TAGS.map((tag) => {
-                    const on = selectedSecondaryTags.includes(tag);
-                    return (
-                      <TouchableOpacity
-                        key={tag}
-                        onPress={() => toggleSecondaryTag(tag)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: 10,
-                          backgroundColor: on ? colors.accent : colors.surfaceAlt,
-                          borderWidth: 1,
-                          borderColor: on ? colors.accent : colors.border,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            fontSize: 12,
-                            fontWeight: '600',
-                            color: on ? '#0B0E11' : colors.textSec,
-                          }}
-                        >
-                          {tag}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-                {selectedSecondaryTags.length > 0 ? (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                {selectedSecondaryTags.length > 0 && (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
                     {selectedSecondaryTags.map((tag) => (
-                      <View
-                        key={tag}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          paddingLeft: 10,
-                          paddingVertical: 6,
-                          paddingRight: 6,
-                          borderRadius: 10,
-                          backgroundColor: colors.surfaceAlt,
-                          borderWidth: 1,
-                          borderColor: colors.border,
-                        }}
-                      >
-                        <Text style={{ fontSize: 12, color: colors.textPri, marginRight: 6 }}>{tag}</Text>
+                      <View key={tag} style={{
+                        flexDirection: 'row', alignItems: 'center',
+                        paddingLeft: 10, paddingRight: 6, paddingVertical: 5,
+                        borderRadius: 8, backgroundColor: 'rgba(240,185,11,0.12)',
+                        borderWidth: 1, borderColor: colors.accent + '50',
+                      }}>
+                        <Text style={{ fontSize: 11, fontWeight: '600', color: colors.accent, marginRight: 6 }}>{tag}</Text>
                         <TouchableOpacity onPress={() => removeSecondaryTag(tag)} hitSlop={8}>
-                          <Feather name="x" size={16} color={colors.textTer} />
+                          <Feather name="x-circle" size={14} color={colors.accent} />
                         </TouchableOpacity>
                       </View>
                     ))}
                   </View>
-                ) : null}
+                )}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                  {availableSecondaryTags.filter((t) => !selectedSecondaryTags.includes(t)).map((tag) => (
+                    <TouchableOpacity key={tag}
+                      onPress={() => toggleSecondaryTag(tag)}
+                      style={{
+                        paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+                        backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border,
+                      }}>
+                      <Text style={{ fontSize: 11, color: colors.textSec }}>{tag}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
                 <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                   <TextInput
                     value={secondaryTagInput}
                     onChangeText={setSecondaryTagInput}
                     onSubmitEditing={addCustomSecondaryTag}
-                    placeholder="Etiket ekle..."
+                    placeholder="Yeni etiket ekle..."
                     placeholderTextColor={colors.textTer}
                     style={{ ...inputStyle, flex: 1, marginBottom: 0 }}
                     returnKeyType="done"
