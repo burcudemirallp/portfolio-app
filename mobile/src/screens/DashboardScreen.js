@@ -83,17 +83,26 @@ export default function DashboardScreen() {
   const [showForm, setShowForm] = useState(false);
   const [dismissedRisks, setDismissedRisks] = useState([]);
   const [selectedPoint, setSelectedPoint] = useState(null);
+  const [chartPeriod, setChartPeriod] = useState(30);
 
   const chartWidth = useMemo(() => Math.max(200, Dimensions.get('window').width - 48), []);
   const chartHeight = 180;
   const chartPad = { top: 28, right: 12, bottom: 32, left: 60 };
+
+  const fetchSnapshots = useCallback(async (days) => {
+    try {
+      const res = await getPortfolioSnapshots(days);
+      const raw = res?.data;
+      setSnapshots(Array.isArray(raw) ? raw : []);
+    } catch (_) {}
+  }, []);
 
   const fetchData = useCallback(async () => {
     setError(null);
     try {
       const [summaryRes, snapshotsRes, fxRes] = await Promise.all([
         getPortfolioSummary(),
-        getPortfolioSnapshots(7),
+        getPortfolioSnapshots(chartPeriod),
         getFxRates(),
       ]);
       setSummary(summaryRes?.data ?? null);
@@ -110,7 +119,7 @@ export default function DashboardScreen() {
         setError(err.response?.data?.detail || err.message || 'Yüklenemedi');
       }
     }
-  }, []);
+  }, [chartPeriod]);
 
   useEffect(() => {
     (async () => {
@@ -125,6 +134,12 @@ export default function DashboardScreen() {
     await fetchData();
     setRefreshing(false);
   }, [fetchData]);
+
+  const handlePeriodChange = useCallback((days) => {
+    setChartPeriod(days);
+    setSelectedPoint(null);
+    fetchSnapshots(days);
+  }, [fetchSnapshots]);
 
   const sortedSnapshots = useMemo(() => {
     if (!snapshots.length) return [];
@@ -172,7 +187,18 @@ export default function DashboardScreen() {
     const step = Math.max(1, Math.floor((n - 1) / (maxXLabels - 1)));
     const xIndices = [];
     for (let i = 0; i < n; i += step) xIndices.push(i);
-    if (xIndices[xIndices.length - 1] !== n - 1) xIndices.push(n - 1);
+    const last = n - 1;
+    if (xIndices[xIndices.length - 1] !== last) {
+      const prevIdx = xIndices[xIndices.length - 1];
+      const minPixelGap = 40;
+      const prevX = chartPad.left + (prevIdx / (n - 1)) * plotW;
+      const lastX = chartPad.left + plotW;
+      if (lastX - prevX >= minPixelGap) {
+        xIndices.push(last);
+      } else {
+        xIndices[xIndices.length - 1] = last;
+      }
+    }
 
     return { points, linePath, areaPath, yTicks, xIndices, plotW, plotH };
   }, [sortedSnapshots, chartWidth, chartHeight]);
@@ -180,25 +206,23 @@ export default function DashboardScreen() {
   const allocationSlices = useMemo(() => {
     const list = summary?.allocation_by_asset_type;
     if (!Array.isArray(list) || !list.length) return [];
-    const total = list.reduce((acc, row) => acc + (Number(row.total_value) || 0), 0);
-    if (total <= 0) {
-      return list.map((row, i) => ({
-        key: `${row.asset_type ?? i}`,
-        label: row.asset_type ?? '—',
-        pct: Number(row.percentage) || 0,
-        color: piePalette[i % piePalette.length],
-      }));
-    }
+
+    const totalVal = list.reduce((acc, row) => acc + (Number(row.total_value) || 0), 0);
+    const totalPct = list.reduce((acc, row) => acc + (Number(row.percentage) || 0), 0);
+    const useValue = totalVal > 0;
+    const divisor = useValue ? totalVal : (totalPct > 0 ? totalPct : 1);
+
     let cum = 0;
     return list.map((row, i) => {
-      const val = Number(row.total_value) || 0;
-      const frac = val / total;
+      const raw = useValue ? (Number(row.total_value) || 0) : (Number(row.percentage) || 0);
+      const frac = raw / divisor;
       const start = cum;
       cum += frac;
       return {
         key: `${row.asset_type ?? i}-${i}`,
         label: row.asset_type ?? '—',
-        pct: Number(row.percentage) ?? frac * 100,
+        pct: Number(row.percentage) || (frac * 100),
+        value: Number(row.total_value) || 0,
         frac,
         start,
         end: cum,
@@ -213,22 +237,6 @@ export default function DashboardScreen() {
     const rO = 78;
     const rI = 48;
     if (!allocationSlices.length) return [];
-
-    const hasFrac = allocationSlices.some((s) => typeof s.frac === 'number');
-    if (!hasFrac) {
-      const n = allocationSlices.length || 1;
-      return allocationSlices.map((s, i) => ({
-        ...s,
-        d: donutSlicePath(
-          cx,
-          cy,
-          rO,
-          rI,
-          -Math.PI / 2 + (i / n) * 2 * Math.PI,
-          -Math.PI / 2 + ((i + 1) / n) * 2 * Math.PI
-        ),
-      }));
-    }
 
     return allocationSlices.map((s) => {
       const a0 = -Math.PI / 2 + s.start * 2 * Math.PI;
@@ -352,28 +360,82 @@ export default function DashboardScreen() {
             padding: 18,
             borderWidth: 1,
             borderColor: colors.border,
-            marginBottom: 14,
+            marginBottom: 16,
           }}
         >
-          <Text style={{ fontSize: 12, color: colors.textTer, marginBottom: 6 }}>Toplam değer</Text>
-          <Text style={{ fontSize: 28, fontWeight: '700', color: colors.textPri, marginBottom: 12 }}>
-            {formatCurrency(totalValue)}
-          </Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
-            <View style={{ minWidth: '45%', flexGrow: 1 }}>
-              <Text style={{ fontSize: 11, color: colors.textTer }}>Maliyet</Text>
-              <Text style={{ fontSize: 14, fontWeight: '600', color: colors.textPri, marginTop: 2 }} numberOfLines={1}>
+          {/* Top row: value + action icons */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 11, color: colors.textTer, marginBottom: 4 }}>Toplam Portföy Değeri</Text>
+              <Text style={{ fontSize: 28, fontWeight: '700', color: colors.textPri }}>{formatCurrency(totalValue)}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 }}>
+                <View
+                  style={{
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6,
+                    backgroundColor: plPositive ? 'rgba(14, 203, 129, 0.15)' : 'rgba(246, 70, 93, 0.15)',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: plPositive ? colors.green : colors.red }}>
+                    {formatPercent(plPct ?? 0)}
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 12, color: colors.textTer }}>
+                  {posCount != null ? `${posCount} pozisyon` : '—'}
+                </Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: 'row', gap: 6, marginLeft: 12 }}>
+              {[
+                { icon: 'plus-circle', label: 'İşlem', color: colors.accent, onPress: () => setShowForm(true) },
+                { icon: 'camera', label: 'Snapshot', color: colors.textSec, onPress: handleSnapshot },
+                { icon: 'refresh-cw', label: 'Fiyatlar', color: colors.textSec, onPress: handleRefreshPrices },
+              ].map((act) => (
+                <TouchableOpacity
+                  key={act.icon}
+                  onPress={act.onPress}
+                  activeOpacity={0.6}
+                  style={{ alignItems: 'center', width: 48 }}
+                >
+                  <View style={{
+                    width: 36, height: 36, borderRadius: 10,
+                    backgroundColor: act.color === colors.accent ? 'rgba(240, 185, 11, 0.15)' : (colors.surfaceAlt || 'rgba(255,255,255,0.05)'),
+                    alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Feather name={act.icon} size={17} color={act.color} />
+                  </View>
+                  <Text style={{ fontSize: 9, color: colors.textTer, marginTop: 3, textAlign: 'center' }}>{act.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* Stats row */}
+          <View
+            style={{
+              flexDirection: 'row',
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+              paddingTop: 12,
+              gap: 10,
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 10, color: colors.textTer }}>Maliyet</Text>
+              <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textPri, marginTop: 3 }} numberOfLines={1}>
                 {formatCurrency(costBasis)}
               </Text>
             </View>
-            <View style={{ minWidth: '45%', flexGrow: 1 }}>
-              <Text style={{ fontSize: 11, color: colors.textTer }}>Gerçekleşmemiş K/Z</Text>
+            <View style={{ width: 1, backgroundColor: colors.border }} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 10, color: colors.textTer }}>Gerçekleşmemiş K/Z</Text>
               <Text
                 style={{
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: '600',
                   color: unrealized == null ? colors.textSec : plPositive ? colors.green : colors.red,
-                  marginTop: 2,
+                  marginTop: 3,
                 }}
                 numberOfLines={1}
               >
@@ -381,70 +443,6 @@ export default function DashboardScreen() {
               </Text>
             </View>
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View
-              style={{
-                paddingHorizontal: 10,
-                paddingVertical: 4,
-                borderRadius: 8,
-                backgroundColor: plPositive ? 'rgba(14, 203, 129, 0.15)' : 'rgba(246, 70, 93, 0.15)',
-              }}
-            >
-              <Text style={{ fontSize: 13, fontWeight: '700', color: plPositive ? colors.green : colors.red }}>
-                {formatPercent(plPct ?? 0)}
-              </Text>
-            </View>
-            <Text style={{ fontSize: 13, color: colors.textSec }}>
-              {posCount != null ? `${posCount} pozisyon` : '—'}
-            </Text>
-          </View>
-        </View>
-
-        {/* Quick actions */}
-        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
-          <TouchableOpacity
-            onPress={() => setShowForm(true)}
-            style={{
-              flex: 1,
-              backgroundColor: colors.accent,
-              paddingVertical: 12,
-              borderRadius: 12,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text style={{ fontSize: 13, fontWeight: '700', color: '#0B0E11' }}>İşlem Ekle</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={handleSnapshot}
-            style={{
-              flex: 1,
-              backgroundColor: colors.surfaceAlt,
-              paddingVertical: 12,
-              borderRadius: 12,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textPri }}>Snapshot</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={handleRefreshPrices}
-            style={{
-              flex: 1,
-              backgroundColor: colors.surfaceAlt,
-              paddingVertical: 12,
-              borderRadius: 12,
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textPri }}>Güncelle</Text>
-          </TouchableOpacity>
         </View>
 
         {/* Portfolio Chart */}
@@ -459,14 +457,36 @@ export default function DashboardScreen() {
             marginBottom: 16,
           }}
         >
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8, marginBottom: 4 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8, marginBottom: 6 }}>
             <Text style={{ fontSize: 13, fontWeight: '600', color: colors.textPri }}>Portföy Değeri</Text>
-            {selectedPoint && (
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: colors.accent }}>{formatCurrency(selectedPoint.value)}</Text>
-                <Text style={{ fontSize: 10, color: colors.textTer }}>{formatDate(selectedPoint.date)}</Text>
-              </View>
-            )}
+            <View style={{ flexDirection: 'row', gap: 2 }}>
+              {[
+                { label: '7G', days: 7 },
+                { label: '1A', days: 30 },
+                { label: '3A', days: 90 },
+                { label: '6A', days: 180 },
+                { label: '1Y', days: 365 },
+                { label: 'Tümü', days: 9999 },
+              ].map((opt) => {
+                const active = chartPeriod === opt.days;
+                return (
+                  <TouchableOpacity
+                    key={opt.days}
+                    onPress={() => handlePeriodChange(opt.days)}
+                    style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 4,
+                      borderRadius: 6,
+                      backgroundColor: active ? colors.accent : 'transparent',
+                    }}
+                  >
+                    <Text style={{ fontSize: 10, fontWeight: '700', color: active ? '#181A20' : colors.textTer }}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
           {chartData ? (
             <View>
@@ -499,12 +519,20 @@ export default function DashboardScreen() {
                 <Path d={chartData.areaPath} fill={colors.accent} opacity={0.12} />
                 <Path d={chartData.linePath} fill="none" stroke={colors.accent} strokeWidth={2.5} strokeLinecap="round" />
 
-                {/* Data points */}
-                {chartData.points.map((p, i) => (
-                  <Circle key={`dp-${i}`} cx={p.x} cy={p.y} r={selectedPoint?.date === p.date ? 6 : 3}
-                    fill={selectedPoint?.date === p.date ? colors.accent : colors.surface}
-                    stroke={colors.accent} strokeWidth={selectedPoint?.date === p.date ? 2.5 : 1.5} />
-                ))}
+                {/* Data points - show all when few, only selected when many */}
+                {chartData.points.length <= 14
+                  ? chartData.points.map((p, i) => (
+                    <Circle key={`dp-${i}`} cx={p.x} cy={p.y} r={selectedPoint?.date === p.date ? 6 : 3}
+                      fill={selectedPoint?.date === p.date ? colors.accent : colors.surface}
+                      stroke={colors.accent} strokeWidth={selectedPoint?.date === p.date ? 2.5 : 1.5} />
+                  ))
+                  : selectedPoint && (() => {
+                    const sp = chartData.points.find(pt => pt.date === selectedPoint.date);
+                    return sp ? (
+                      <Circle cx={sp.x} cy={sp.y} r={6} fill={colors.accent} stroke={colors.accent} strokeWidth={2.5} />
+                    ) : null;
+                  })()
+                }
 
                 {/* Selected point crosshair */}
                 {selectedPoint && (() => {
@@ -545,6 +573,37 @@ export default function DashboardScreen() {
                   setTimeout(() => setSelectedPoint(null), 2000);
                 }}
               />
+
+              {/* Floating tooltip near selected point */}
+              {selectedPoint && (() => {
+                const sp = chartData.points.find(pt => pt.date === selectedPoint.date);
+                if (!sp) return null;
+                const tooltipW = 120;
+                const tooltipH = 38;
+                const pointAbove = sp.y - tooltipH - 12 >= 0;
+                let left = sp.x - tooltipW / 2;
+                if (left < 4) left = 4;
+                if (left + tooltipW > chartWidth - 4) left = chartWidth - tooltipW - 4;
+                const top = pointAbove ? sp.y - tooltipH - 10 : sp.y + 14;
+                const d = sp.date ? new Date(sp.date) : null;
+                const dateStr = d ? `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}` : '';
+                return (
+                  <View pointerEvents="none" style={{
+                    position: 'absolute', left, top,
+                    width: tooltipW, height: tooltipH,
+                    backgroundColor: colors.surfaceAlt || '#1E2329',
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: colors.accent,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingHorizontal: 6,
+                  }}>
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: colors.accent }}>{formatCurrency(sp.value)}</Text>
+                    <Text style={{ fontSize: 9, color: colors.textTer, marginTop: 1 }}>{dateStr}</Text>
+                  </View>
+                );
+              })()}
             </View>
           ) : (
             <View style={{ height: chartHeight, justifyContent: 'center', alignItems: 'center' }}>
@@ -649,8 +708,9 @@ export default function DashboardScreen() {
             moversList.map((item, idx) => {
               const sym = item.symbol ?? '—';
               const nm = item.name ?? '';
-              const pctVal = item.current_pl_percentage;
-              const tv = item.total_value;
+              const pctVal = item.unrealized_pl_percentage ?? item.current_pl_percentage;
+              const tv = item.market_value_try ?? item.total_value;
+              const pl = item.unrealized_pl_try ?? item.current_pl;
               const pos = pctVal != null && Number(pctVal) >= 0;
               return (
                 <View
@@ -671,7 +731,10 @@ export default function DashboardScreen() {
                     <Text style={{ fontSize: 13, fontWeight: '700', color: pos ? colors.green : colors.red }}>
                       {formatPercent(pctVal ?? 0)}
                     </Text>
-                    <Text style={{ fontSize: 12, color: colors.textSec, marginTop: 2 }}>{formatCurrency(tv)}</Text>
+                    <Text style={{ fontSize: 12, color: pos ? colors.green : colors.red, marginTop: 2 }}>
+                      {pl != null ? formatCurrency(pl) : '—'}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.textTer, marginTop: 1 }}>{formatCurrency(tv)}</Text>
                   </View>
                 </View>
               );
