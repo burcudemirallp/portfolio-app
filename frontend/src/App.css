@@ -1,0 +1,4 @@
+/* Minimal reset - Binance theme handled via Tailwind */
+#root {
+  min-height: 100vh;
+}

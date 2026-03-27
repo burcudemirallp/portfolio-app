@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+@layer base {
+  .dark {
+    color-scheme: dark;
+  }
+
+  .dark ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .dark ::-webkit-scrollbar-track {
+    background: #1E2329;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: #2B3139;
+    border-radius: 4px;
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: #3B4149;
+  }
+
+  .dark body {
+    background-color: #0B0E11;
+  }
+
+  .dark input, .dark select, .dark textarea {
+    color-scheme: dark;
+  }
+}
+
+@layer components {
+  .bnc-card {
+    @apply bg-bnc-surface border border-bnc-border rounded-xl;
+  }
+  .bnc-input {
+    @apply bg-bnc-surfaceAlt border border-bnc-border rounded-lg px-3.5 py-2.5 text-bnc-textPri placeholder-bnc-textTer text-sm focus:outline-none focus:border-bnc-accent transition-colors;
+  }
+  .bnc-btn-primary {
+    @apply bg-bnc-accent text-bnc-bg font-semibold px-4 py-2.5 rounded-lg hover:bg-bnc-accentHover transition-colors text-sm;
+  }
+  .bnc-btn-secondary {
+    @apply bg-bnc-surfaceAlt text-bnc-textSec font-medium px-4 py-2.5 rounded-lg hover:bg-bnc-border transition-colors text-sm;
+  }
+  .bnc-badge-green {
+    @apply bg-bnc-green/15 text-bnc-green text-xs font-semibold px-2 py-0.5 rounded;
+  }
+  .bnc-badge-red {
+    @apply bg-bnc-red/15 text-bnc-red text-xs font-semibold px-2 py-0.5 rounded;
+  }
+}
