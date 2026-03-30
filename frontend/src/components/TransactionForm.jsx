@@ -1,27 +1,27 @@
 import { useState, useEffect } from 'react';
 import { Plus, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { 
   createTransaction,
   updateTransaction,
   getInstruments, 
   getAccounts,
   createInstrument,
-  createBroker,
   createAccount,
-  getBrokers,
   getDebugTransactions
 } from '../services/api';
 
 function TransactionForm({ transaction, onClose, onSuccess }) {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const isEditMode = !!transaction;
-  const [step, setStep] = useState(1); // 1: Transaction, 2: Add Instrument, 3: Add Broker, 4: Add Account
+  const [step, setStep] = useState(1); // 1: Transaction, 2: Add Instrument, 3: Add Account
   const [instruments, setInstruments] = useState([]);
   const [accounts, setAccounts] = useState([]);
-  const [brokers, setBrokers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [primaryTagInput, setPrimaryTagInput] = useState('');
   const [secondaryTagInput, setSecondaryTagInput] = useState('');
   const [availablePrimaryTags, setAvailablePrimaryTags] = useState(['ABD', 'Altın', 'Fon', 'Osmanlı', 'TM Model Portföy']);
   const [availableSecondaryTags] = useState(['Temettü', 'Büyüme', 'Değer', 'Kısa Vade', 'Uzun Vade', 'Spekülatif']);
@@ -70,25 +70,20 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
     currency: 'TRY',
   });
 
-  const [newBroker, setNewBroker] = useState({ name: '' });
-  
   const [newAccount, setNewAccount] = useState({
     name: '',
     base_currency: 'TRY',
-    broker_id: '',
   });
 
   const loadData = async () => {
     try {
-      const [instRes, accRes, brokerRes, txRes] = await Promise.all([
+      const [instRes, accRes, txRes] = await Promise.all([
         getInstruments(),
         getAccounts(),
-        getBrokers(),
         getDebugTransactions()
       ]);
       setInstruments(Array.isArray(instRes?.data) ? instRes.data : []);
       setAccounts(Array.isArray(accRes?.data) ? accRes.data : []);
-      setBrokers(Array.isArray(brokerRes?.data) ? brokerRes.data : []);
 
       const txList = Array.isArray(txRes?.data) ? txRes.data : [];
       const existingPrimaryTags = [...new Set(
@@ -130,7 +125,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
       onSuccess?.();
       onClose();
     } catch (err) {
-      setError(err.response?.data?.detail || (isEditMode ? 'İşlem güncellenirken hata oluştu' : 'İşlem eklenirken hata oluştu'));
+      setError(err.response?.data?.detail || (isEditMode ? t('txForm.error.updateFailed') : t('txForm.error.createFailed')));
     } finally {
       setLoading(false);
     }
@@ -146,23 +141,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
       setStep(1);
       setNewInstrument({ symbol: '', name: '', asset_type: 'Hisse', market: 'BIST', currency: 'TRY' });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Enstrüman eklenirken hata oluştu');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAddBroker = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      const res = await createBroker(newBroker);
-      await loadData();
-      setNewAccount({ ...newAccount, broker_id: res.data.id });
-      setStep(4); // Go to add account
-      setNewBroker({ name: '' });
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Broker eklenirken hata oluştu');
+      setError(err.response?.data?.detail || t('txForm.error.instrumentFailed'));
     } finally {
       setLoading(false);
     }
@@ -172,16 +151,13 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await createAccount({
-        ...newAccount,
-        broker_id: parseInt(newAccount.broker_id)
-      });
+      const res = await createAccount(newAccount);
       await loadData();
       setFormData({ ...formData, account_id: res.data.id });
       setStep(1);
-      setNewAccount({ name: '', base_currency: 'TRY', broker_id: '' });
+      setNewAccount({ name: '', base_currency: 'TRY' });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Hesap eklenirken hata oluştu');
+      setError(err.response?.data?.detail || t('txForm.error.accountFailed'));
     } finally {
       setLoading(false);
     }
@@ -192,10 +168,9 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
       <div className="bg-bnc-surface border border-bnc-border rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-bnc-surface border-b border-bnc-border px-6 py-4 flex justify-between items-center">
           <h2 className="text-xl font-semibold text-bnc-textPri">
-            {step === 1 && (isEditMode ? 'Alımı Düzenle' : 'Yeni Alım Ekle')}
-            {step === 2 && 'Yeni Varlık Ekle'}
-            {step === 3 && 'Yeni Broker Ekle'}
-            {step === 4 && 'Yeni Hesap Ekle'}
+            {step === 1 && (isEditMode ? t('txForm.title.edit') : t('txForm.title.new'))}
+            {step === 2 && t('txForm.title.newAsset')}
+            {step === 3 && t('txForm.title.newAccount')}
           </h2>
           <button onClick={onClose} className="text-bnc-textTer hover:text-bnc-textPri">
             <X className="w-6 h-6" />
@@ -213,7 +188,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
           {step === 1 && (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Hesap</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.account')}</label>
                 <div className="flex gap-2">
                   <select
                     value={formData.account_id}
@@ -221,14 +196,14 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                     className="flex-1 bnc-input"
                     required
                   >
-                    <option value="">Hesap Seçin</option>
+                    <option value="">{t('txForm.placeholder.selectAccount')}</option>
                     {accounts.map((acc) => (
                       <option key={acc.id} value={acc.id}>{acc.name}</option>
                     ))}
                   </select>
                   <button
                     type="button"
-                    onClick={() => brokers.length > 0 ? setStep(4) : setStep(3)}
+                    onClick={() => setStep(3)}
                     className="bnc-btn-secondary px-4 py-2.5"
                   >
                     <Plus className="w-5 h-5" />
@@ -237,7 +212,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Enstrüman</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.instrument')}</label>
                 <div className="flex gap-2">
                   <select
                     value={formData.instrument_id}
@@ -245,9 +220,9 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                     className="flex-1 bnc-input"
                     required
                   >
-                    <option value="">Enstrüman Seçin</option>
+                    <option value="">{t('txForm.placeholder.selectInstrument')}</option>
                     {instruments.map((inst) => (
-                      <option key={inst.id} value={inst.id}>{inst.symbol} - {inst.name}</option>
+                      <option key={inst.id} value={inst.id}>{inst.symbol}</option>
                     ))}
                   </select>
                   <button
@@ -261,22 +236,22 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Yatırım Vadesi</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.horizon')}</label>
                 <select
                   value={formData.horizon}
                   onChange={(e) => setFormData({ ...formData, horizon: e.target.value })}
                   className="w-full bnc-input"
                 >
-                  <option value="trade">Çok Kısa Vade (Trade)</option>
-                  <option value="short">Kısa Vade (Short)</option>
-                  <option value="mid">Orta Vade (Mid)</option>
-                  <option value="long">Uzun Vade (Long)</option>
+                  <option value="trade">{t('txForm.horizon.trade')}</option>
+                  <option value="short">{t('txForm.horizon.short')}</option>
+                  <option value="mid">{t('txForm.horizon.mid')}</option>
+                  <option value="long">{t('txForm.horizon.long')}</option>
                 </select>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Miktar</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.quantity')}</label>
                   <input
                     type="number"
                     step="0.01"
@@ -288,7 +263,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Fiyat</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.price')}</label>
                   <input
                     type="number"
                     step="0.01"
@@ -302,7 +277,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Komisyon</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.fees')}</label>
                   <input
                     type="number"
                     step="0.01"
@@ -313,7 +288,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Para Birimi</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.currency')}</label>
                   <select
                     value={formData.currency}
                     onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
@@ -329,7 +304,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
               {/* Birincil Tag */}
               <div>
                 <label className="block text-sm font-medium text-bnc-textSec mb-1">
-                  Birincil Tag <span className="text-bnc-textTer text-xs">(grafiklerde gösterilir)</span>
+                  {t('txForm.label.primaryTag')} <span className="text-bnc-textTer text-xs">{t('txForm.hint.primaryTag')}</span>
                 </label>
                 
                 {/* Seçili Birincil Tag */}
@@ -370,31 +345,31 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 <div className="flex gap-2">
                   <input
                     type="text"
-                    value={secondaryTagInput}
-                    onChange={(e) => setSecondaryTagInput(e.target.value)}
+                    value={primaryTagInput}
+                    onChange={(e) => setPrimaryTagInput(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
-                        if (secondaryTagInput.trim()) {
-                          setFormData({ ...formData, primary_tag: secondaryTagInput.trim() });
-                          setSecondaryTagInput('');
+                        if (primaryTagInput.trim()) {
+                          setFormData({ ...formData, primary_tag: primaryTagInput.trim() });
+                          setPrimaryTagInput('');
                         }
                       }
                     }}
-                    placeholder="Yeni birincil tag ekle..."
+                    placeholder={t('txForm.placeholder.newPrimaryTag')}
                     className="flex-1 bnc-input text-sm"
                   />
                   <button
                     type="button"
                     onClick={() => {
-                      if (secondaryTagInput.trim()) {
-                        setFormData({ ...formData, primary_tag: secondaryTagInput.trim() });
-                        setSecondaryTagInput('');
+                      if (primaryTagInput.trim()) {
+                        setFormData({ ...formData, primary_tag: primaryTagInput.trim() });
+                        setPrimaryTagInput('');
                       }
                     }}
                     className="bnc-btn-primary text-sm"
                   >
-                    Ekle
+                    {t('common.add')}
                   </button>
                 </div>
               </div>
@@ -402,7 +377,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
               {/* İkincil Tag'ler */}
               <div>
                 <label className="block text-sm font-medium text-bnc-textSec mb-1">
-                  İkincil Tag&apos;ler <span className="text-bnc-textTer text-xs">(sadece filtrelerde kullanılır, çoklu seçim)</span>
+                  {t('txForm.label.secondaryTags')} <span className="text-bnc-textTer text-xs">{t('txForm.hint.secondaryTags')}</span>
                 </label>
                 
                 {/* Seçili İkincil Tag'ler */}
@@ -464,7 +439,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                     type="text"
                     value={secondaryTagInput}
                     onChange={(e) => setSecondaryTagInput(e.target.value)}
-                    onKeyPress={(e) => {
+                    onKeyDown={(e) => {
                       if (e.key === 'Enter' && secondaryTagInput.trim()) {
                         e.preventDefault();
                         const currentTags = formData.secondary_tags.split(',').map(t => t.trim()).filter(Boolean);
@@ -476,7 +451,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                       }
                     }}
                     className="flex-1 bnc-input text-sm"
-                    placeholder="Özel tag ekle (Enter'a bas)"
+                    placeholder={t('txForm.placeholder.customTag')}
                   />
                   <button
                     type="button"
@@ -492,7 +467,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                     }}
                     className="bnc-btn-secondary text-sm"
                   >
-                    Ekle
+                    {t('common.add')}
                   </button>
                 </div>
               </div>
@@ -503,14 +478,14 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                   onClick={onClose}
                   className="flex-1 bnc-btn-secondary"
                 >
-                  İptal
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
                   className="flex-1 bnc-btn-primary disabled:opacity-50"
                 >
-                  {loading ? (isEditMode ? 'Güncelleniyor...' : 'Ekleniyor...') : (isEditMode ? 'Güncelle' : 'Ekle')}
+                  {loading ? (isEditMode ? t('common.updating') : t('common.adding')) : (isEditMode ? t('txForm.button.update') : t('common.add'))}
                 </button>
               </div>
             </form>
@@ -520,7 +495,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
           {step === 2 && (
             <form onSubmit={handleAddInstrument} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Sembol</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.instrument.symbol')}</label>
                 <input
                   type="text"
                   value={newInstrument.symbol}
@@ -531,21 +506,9 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">İsim</label>
-                <input
-                  type="text"
-                  value={newInstrument.name}
-                  onChange={(e) => setNewInstrument({ ...newInstrument, name: e.target.value })}
-                  className="w-full bnc-input"
-                  placeholder="Türk Hava Yolları"
-                  required
-                />
-              </div>
-
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Tip</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.instrument.type')}</label>
                   <select
                     value={newInstrument.asset_type}
                     onChange={(e) => setNewInstrument({ ...newInstrument, asset_type: e.target.value })}
@@ -558,7 +521,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Piyasa</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.instrument.market')}</label>
                   <select
                     value={newInstrument.market}
                     onChange={(e) => setNewInstrument({ ...newInstrument, market: e.target.value })}
@@ -571,7 +534,7 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-bnc-textSec mb-1">Para Birimi</label>
+                  <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.currency')}</label>
                   <select
                     value={newInstrument.currency}
                     onChange={(e) => setNewInstrument({ ...newInstrument, currency: e.target.value })}
@@ -590,94 +553,36 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                   onClick={() => setStep(1)}
                   className="flex-1 bnc-btn-secondary"
                 >
-                  Geri
+                  {t('common.back')}
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
                   className="flex-1 bnc-btn-primary disabled:opacity-50"
                 >
-                  {loading ? 'Ekleniyor...' : 'Ekle'}
+                  {loading ? t('common.adding') : t('common.add')}
                 </button>
               </div>
             </form>
           )}
 
-          {/* Step 3: Add Broker */}
+          {/* Step 3: Add Account */}
           {step === 3 && (
-            <form onSubmit={handleAddBroker} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Broker Adı</label>
-                <input
-                  type="text"
-                  value={newBroker.name}
-                  onChange={(e) => setNewBroker({ name: e.target.value })}
-                  className="w-full bnc-input"
-                  placeholder="Garanti BBVA"
-                  required
-                />
-              </div>
-
-              <div className="flex gap-3 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="flex-1 bnc-btn-secondary"
-                >
-                  Geri
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="flex-1 bnc-btn-primary disabled:opacity-50"
-                >
-                  {loading ? 'Ekleniyor...' : 'Ekle ve Hesap Oluştur'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* Step 4: Add Account */}
-          {step === 4 && (
             <form onSubmit={handleAddAccount} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Hesap Adı</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.account.name')}</label>
                 <input
                   type="text"
                   value={newAccount.name}
                   onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })}
                   className="w-full bnc-input"
-                  placeholder="Ana Hesap"
+                  placeholder={t('txForm.account.placeholder')}
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Broker</label>
-                <div className="flex gap-2">
-                  <select
-                    value={newAccount.broker_id}
-                    onChange={(e) => setNewAccount({ ...newAccount, broker_id: e.target.value })}
-                    className="flex-1 bnc-input"
-                    required
-                  >
-                    <option value="">Broker Seçin</option>
-                    {brokers.map((broker) => (
-                      <option key={broker.id} value={broker.id}>{broker.name}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setStep(3)}
-                    className="bnc-btn-secondary px-4 py-2.5"
-                  >
-                    <Plus className="w-5 h-5" />
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-bnc-textSec mb-1">Para Birimi</label>
+                <label className="block text-sm font-medium text-bnc-textSec mb-1">{t('txForm.label.currency')}</label>
                 <select
                   value={newAccount.base_currency}
                   onChange={(e) => setNewAccount({ ...newAccount, base_currency: e.target.value })}
@@ -695,14 +600,14 @@ function TransactionForm({ transaction, onClose, onSuccess }) {
                   onClick={() => setStep(1)}
                   className="flex-1 bnc-btn-secondary"
                 >
-                  Geri
+                  {t('common.back')}
                 </button>
                 <button
                   type="submit"
                   disabled={loading}
                   className="flex-1 bnc-btn-primary disabled:opacity-50"
                 >
-                  {loading ? 'Ekleniyor...' : 'Ekle'}
+                  {loading ? t('common.adding') : t('common.add')}
                 </button>
               </div>
             </form>

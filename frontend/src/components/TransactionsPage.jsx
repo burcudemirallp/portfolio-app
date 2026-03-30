@@ -1,16 +1,19 @@
 import { useState, useEffect, useMemo, useCallback, useTransition, useDeferredValue } from 'react';
-import { Trash2, Filter, Edit2, RefreshCw, TrendingUp, TrendingDown, Camera, Download, DollarSign } from 'lucide-react';
+import { Trash2, Edit2, DollarSign, Search, X, PlusCircle } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { useToast } from './Toast';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
-import { getDebugTransactions, deleteTransaction, getInstruments, getAccounts, getFxRates, createPortfolioSnapshot, getPortfolioSummary } from '../services/api';
+import { getDebugTransactions, deleteTransaction, getInstruments, getAccounts, getFxRates, getPortfolioSummary } from '../services/api';
 import TransactionForm from './TransactionForm';
 import SellForm from './SellForm';
+import AddPositionForm from './AddPositionForm';
 
 const COLORS = ['#F0B90B', '#0ECB81', '#F6465D', '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
-function TransactionsPage({ onRefreshPrices, refreshing }) {
+function TransactionsPage() {
   const { user } = useAuth();
+  const { t, locale } = useLanguage();
   const { showSuccess, showError } = useToast();
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,18 +29,17 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
     plStatus: 'all', // 'profit', 'loss', 'breakeven', 'all'
     search: ''
   });
-  const [sortBy, setSortBy] = useState({ field: 'timestamp', order: 'desc' }); // 'timestamp', 'quantity', 'pl', 'value'
+  const [sortBy, setSortBy] = useState({ field: 'value', order: 'desc' });
   const [instruments, setInstruments] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [prices, setPrices] = useState({});
   const [fxRates, setFxRates] = useState({ USDTRY: 1, EURTRY: 1 });
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  const [creatingSnapshot, setCreatingSnapshot] = useState(false);
   const [summary, setSummary] = useState(null);
   const [chartFilter, setChartFilter] = useState(null); // { type: 'asset_type', value: 'Hisse' }
-  const [sellingTransaction, setSellingTransaction] = useState(null); // For sell modal
+  const [sellingTransaction, setSellingTransaction] = useState(null);
+  const [addingToTransaction, setAddingToTransaction] = useState(null);
   const [searchInput, setSearchInput] = useState(''); // Separate state for input
-  const [isPending, startTransition] = useTransition(); // For non-blocking updates
+  const [, startTransition] = useTransition();
   
   // Use deferred value for expensive computations
   const deferredFilter = useDeferredValue(filter);
@@ -94,11 +96,14 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
     loadData();
   }, [user, loadData]);
 
-  // Listen for price refresh from sidebar
   useEffect(() => {
     const handler = () => loadData();
     window.addEventListener('portfolio-prices-refreshed', handler);
-    return () => window.removeEventListener('portfolio-prices-refreshed', handler);
+    window.addEventListener('portfolio-transaction-created', handler);
+    return () => {
+      window.removeEventListener('portfolio-prices-refreshed', handler);
+      window.removeEventListener('portfolio-transaction-created', handler);
+    };
   }, [loadData]);
 
   // Debounce search input with transition
@@ -123,43 +128,36 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
 
   const getInstrumentName = useCallback((id) => {
     const inst = instrumentMap.get(id);
-    return inst ? `${inst.symbol} - ${inst.name}` : `ID: ${id}`;
+    return inst ? inst.symbol : `ID: ${id}`;
   }, [instrumentMap]);
 
   const formatCurrency = useCallback((value) => {
-    return new Intl.NumberFormat('tr-TR', {
+    return new Intl.NumberFormat(locale, {
       style: 'currency',
       currency: 'TRY',
       minimumFractionDigits: 2,
     }).format(value);
-  }, []);
+  }, [locale]);
 
   const formatPercent = useCallback((value) => {
     return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
   }, []);
 
   const formatDate = useCallback((dateString) => {
-    return new Date(dateString).toLocaleString('tr-TR');
-  }, []);
+    return new Date(dateString).toLocaleString(locale);
+  }, [locale]);
 
-  const handleCreateSnapshot = useCallback(async () => {
-    setCreatingSnapshot(true);
-    try {
-      const res = await createPortfolioSnapshot();
-      showSuccess(`Snapshot oluşturuldu! ${res.data.total_positions} pozisyon kaydedildi`);
-    } catch (err) {
-      console.error('Error creating snapshot:', err);
-      showError('Snapshot oluşturulamadı: ' + (err.response?.data?.detail || err.message));
-    } finally {
-      setCreatingSnapshot(false);
-    }
-  }, [formatCurrency, showSuccess, showError]);
+  const sortOptions = useMemo(() => [
+    { field: 'value', order: 'desc', label: t('portfolio.sort.valueDesc') },
+    { field: 'value', order: 'asc', label: t('portfolio.sort.valueAsc') },
+    { field: 'pl', order: 'desc', label: t('portfolio.sort.plDesc') },
+    { field: 'pl', order: 'asc', label: t('portfolio.sort.plAsc') },
+    { field: 'timestamp', order: 'desc', label: t('portfolio.sort.newest') },
+    { field: 'timestamp', order: 'asc', label: t('portfolio.sort.oldest') },
+  ], [t]);
 
-  // Get unique primary tags from transactions (memoized)
-  const uniqueTags = useMemo(() => 
-    [...new Set((transactions || []).map(tx => tx.primary_tag).filter(Boolean))],
-    [transactions]
-  );
+  const emptySecondaryPie = useMemo(() => [{ name: t('portfolio.noSecondaryTags'), value: 1 }], [t]);
+  const emptyInstrumentPie = useMemo(() => [{ name: t('common.noData'), value: 1 }], [t]);
 
   // Filtreleme işlemi (memoized, instrumentMap kullanarak optimize edildi)
   // Use deferredFilter instead of filter for expensive operations
@@ -195,14 +193,13 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
         if (txDate > toDate) return false;
       }
       
-      // Search filter (expensive - do last)
       if (deferredFilter.search) {
         const inst = instrumentMap.get(tx.instrument_id);
-        if (!inst) return false;
         const searchLower = deferredFilter.search.toLowerCase();
-        const symbolMatch = inst.symbol?.toLowerCase().includes(searchLower);
-        const nameMatch = inst.name?.toLowerCase().includes(searchLower);
-        if (!symbolMatch && !nameMatch) return false;
+        const symbolMatch = inst?.symbol?.toLowerCase().includes(searchLower);
+        const primaryTagMatch = tx.primary_tag?.toLowerCase().includes(searchLower);
+        const secondaryTagMatch = tx.secondary_tags?.toLowerCase().includes(searchLower);
+        if (!symbolMatch && !primaryTagMatch && !secondaryTagMatch) return false;
       }
       
       // P/L Status filter (most expensive - do last)
@@ -308,87 +305,6 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
     });
   }, [chartFilteredTransactions, sortBy, prices, fxRates]);
 
-  // CSV Export fonksiyonu (sortedTransactions tanımlandıktan sonra)
-  const exportToCSV = useCallback(() => {
-    // CSV başlıkları
-    const headers = [
-      'Tarih',
-      'Enstrüman',
-      'Adet',
-      'Alış Fiyatı',
-      'Para Birimi',
-      'Güncel Fiyat (TRY)',
-      'Güncel Değer (TRY)',
-      'Toplam Maliyet (TRY)',
-      'Kar/Zarar (TRY)',
-      'Kar/Zarar (%)',
-      'Birincil Tag',
-      'İkincil Tag\'ler',
-      'Hesap',
-      'Broker',
-      'Fiyat Güncelleme'
-    ];
-
-    // CSV satırları
-    const rows = sortedTransactions.map(tx => {
-      const inst = instrumentMap.get(tx.instrument_id);
-      const account = accounts.find(a => a.id === tx.account_id);
-      const priceInfo = prices?.[tx.instrument_id];
-      
-      const txCurrency = tx.currency?.toUpperCase() || 'TRY';
-      const fxRate = txCurrency === 'USD' ? (fxRates.USDTRY || 1) : txCurrency === 'EUR' ? (fxRates.EURTRY || 1) : 1;
-      const totalCostTRY = ((tx.quantity || 0) * (tx.price || 0) + (tx.fees || 0)) * fxRate;
-      const marketValue = (priceInfo?.current_price_try || 0) * (tx.quantity || 0);
-      const unrealizedPL = marketValue - totalCostTRY;
-      const unrealizedPLPercentage = totalCostTRY > 0 ? (unrealizedPL / totalCostTRY * 100) : 0;
-
-      return [
-        formatDate(tx.timestamp),
-        inst ? `${inst.symbol} - ${inst.name}` : `ID: ${tx.instrument_id}`,
-        tx.quantity || 0,
-        tx.price || 0,
-        tx.currency || 'TRY',
-        priceInfo?.current_price_try || 0,
-        marketValue.toFixed(2),
-        totalCostTRY.toFixed(2),
-        unrealizedPL.toFixed(2),
-        unrealizedPLPercentage.toFixed(2),
-        tx.primary_tag || '',
-        tx.secondary_tags || '',
-        account?.name || '',
-        account?.broker_name || '',
-        priceInfo?.last_updated ? new Date(priceInfo.last_updated).toLocaleString('tr-TR') : ''
-      ];
-    });
-
-    // CSV içeriğini oluştur
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(cell => {
-        // Virgül veya tırnak içeren hücreleri tırnak içine al
-        const cellStr = String(cell);
-        if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
-          return `"${cellStr.replace(/"/g, '""')}"`;
-        }
-        return cellStr;
-      }).join(','))
-    ].join('\n');
-
-    // BOM ekle (Excel için Türkçe karakter desteği)
-    const BOM = '\uFEFF';
-    const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
-    
-    // İndir
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `portfoy-${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }, [sortedTransactions, instrumentMap, accounts, prices, fxRates, formatDate]);
-
   // Toplam yatırım (TRY bazında) - memoized (chart filter dahil) - Skip during pending
   const totalInvestedTRY = useMemo(() => {
     if (isStale || !chartFilteredTransactions || chartFilteredTransactions.length === 0) return 0;
@@ -443,61 +359,90 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
   );
 
   const displayMarketValue = useMemo(() => {
-    if (!chartFilter && summary) return summary.total_market_value_try || 0;
-    return totalMarketValue;
-  }, [chartFilter, summary, totalMarketValue]);
+    if (!summary) return 0;
+    if (!chartFilter) return summary.total_market_value_try || 0;
+    if (chartFilter.type === 'primary_tag') {
+      const match = (summary.allocation_by_primary_tag || []).find(
+        a => a.asset_type === chartFilter.value
+      );
+      if (match) return match.market_value_try;
+    }
+    if (chartFilter.type === 'secondary_tag') {
+      const match = (summary.allocation_by_tag || []).find(
+        a => a.asset_type === chartFilter.value
+      );
+      if (match) return match.market_value_try;
+    }
+    return 0;
+  }, [chartFilter, summary]);
 
   const displayInvested = useMemo(() => {
-    if (!chartFilter && summary) return summary.total_cost_basis_try || 0;
-    return totalInvestedTRY;
-  }, [chartFilter, summary, totalInvestedTRY]);
+    if (!summary) return 0;
+    if (!chartFilter) return summary.total_cost_basis_try || 0;
+    // Filtre aktifken positions üzerinden maliyet hesapla
+    if (summary.positions) {
+      let filtered = summary.positions;
+      if (chartFilter.type === 'primary_tag') {
+        filtered = filtered.filter(p => p.primary_tag === chartFilter.value);
+      } else if (chartFilter.type === 'secondary_tag') {
+        filtered = filtered.filter(p => {
+          const tags = p.secondary_tags ? p.secondary_tags.split(',').map(t => t.trim()) : [];
+          return tags.includes(chartFilter.value);
+        });
+      }
+      return filtered.reduce((sum, p) => sum + ((p.avg_cost_try || 0) * (p.quantity || 0)), 0);
+    }
+    return 0;
+  }, [chartFilter, summary]);
 
   const displayPL = useMemo(() => displayMarketValue - displayInvested, [displayMarketValue, displayInvested]);
   const displayPLPct = useMemo(() => displayInvested > 0 ? (displayPL / displayInvested * 100) : 0, [displayPL, displayInvested]);
 
-  // Count active filters (memoized)
-  const activeFilterCount = useMemo(() => Object.entries(filter).filter(([key, value]) => {
-    if (key === 'instrument' || key === 'tag' || key === 'currency' || key === 'account' || key === 'plStatus') {
-      return value !== 'all';
-    }
-    if (key === 'dateFrom' || key === 'dateTo' || key === 'search') {
-      return value !== '';
-    }
-    return false;
-  }).length, [filter]);
-
-  // Primary Tag Chart Data (memoized) - Use chartFilteredTransactions to match stats
+  // Primary Tag Chart Data - backend summary verisi (tek doğru kaynak)
   const primaryTagChartData = useMemo(() => {
-    if (isStale || !chartFilteredTransactions || chartFilteredTransactions.length === 0) return [];
-    
-    const tagGroups = {};
-    for (const tx of chartFilteredTransactions) {
-      const tag = tx.primary_tag || '🚫 Etiketsiz';
-      if (!tagGroups[tag]) tagGroups[tag] = 0;
-      const txCurrency = tx.currency?.toUpperCase() || 'TRY';
-      const fxRate = txCurrency === 'USD' ? (fxRates.USDTRY || 1) : txCurrency === 'EUR' ? (fxRates.EURTRY || 1) : 1;
-      tagGroups[tag] += ((tx.quantity || 0) * (tx.price || 0) + (tx.fees || 0)) * fxRate;
-    }
-    return Object.entries(tagGroups).map(([name, value]) => ({ name, value }));
-  }, [chartFilteredTransactions, fxRates, isStale]);
+    if (!summary?.allocation_by_primary_tag) return [];
+    return summary.allocation_by_primary_tag.map(a => ({
+      name: a.asset_type,
+      value: a.market_value_try,
+    }));
+  }, [summary]);
 
-  // Secondary Tag Chart Data (memoized) - Use chartFilteredTransactions to match stats
+  // Secondary Tag Chart Data - positions verisinden hesapla
   const secondaryTagChartData = useMemo(() => {
-    if (isStale || !chartFilteredTransactions || chartFilteredTransactions.length === 0) return [];
-    
-    const secondaryTagGroups = {};
-    for (const tx of chartFilteredTransactions) {
-      if (!tx.secondary_tags) continue;
-      const tags = tx.secondary_tags.split(',').map(t => t.trim()).filter(Boolean);
+    if (!summary?.positions) return [];
+    const tagGroups = {};
+    for (const pos of summary.positions) {
+      if (!pos.secondary_tags || (pos.market_value_try || 0) <= 0) continue;
+      const tags = pos.secondary_tags.split(',').map(t => t.trim()).filter(Boolean);
       for (const tag of tags) {
-        if (!secondaryTagGroups[tag]) secondaryTagGroups[tag] = 0;
-        const txCurrency = tx.currency?.toUpperCase() || 'TRY';
-        const fxRate = txCurrency === 'USD' ? (fxRates.USDTRY || 1) : txCurrency === 'EUR' ? (fxRates.EURTRY || 1) : 1;
-        secondaryTagGroups[tag] += ((tx.quantity || 0) * (tx.price || 0) + (tx.fees || 0)) * fxRate;
+        if (!tagGroups[tag]) tagGroups[tag] = 0;
+        tagGroups[tag] += pos.market_value_try;
       }
     }
-    return Object.entries(secondaryTagGroups).map(([name, value]) => ({ name, value }));
-  }, [chartFilteredTransactions, fxRates, isStale]);
+    return Object.entries(tagGroups).map(([name, value]) => ({ name, value }));
+  }, [summary]);
+
+  // Enstrüman Dağılımı - chart filter aktifse filtreli, değilse tüm pozisyonlar
+  const instrumentChartData = useMemo(() => {
+    if (!summary?.positions) return [];
+
+    let positions = summary.positions;
+    if (chartFilter) {
+      if (chartFilter.type === 'primary_tag') {
+        positions = positions.filter(p => p.primary_tag === chartFilter.value);
+      } else if (chartFilter.type === 'secondary_tag') {
+        positions = positions.filter(p => {
+          const tags = p.secondary_tags ? p.secondary_tags.split(',').map(t => t.trim()) : [];
+          return tags.includes(chartFilter.value);
+        });
+      }
+    }
+
+    return positions
+      .filter(p => (p.market_value_try || 0) > 0)
+      .map(p => ({ name: p.symbol, value: p.market_value_try }))
+      .sort((a, b) => b.value - a.value);
+  }, [summary, chartFilter]);
 
   // Asset Type Chart Data (memoized) - Use chartFilteredTransactions to match stats
   const assetTypeChartData = useMemo(() => {
@@ -507,65 +452,38 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
     for (const tx of chartFilteredTransactions) {
       const inst = instrumentMap.get(tx.instrument_id);
       if (!inst) continue;
-      const assetType = inst.asset_type || '🚫 Bilinmiyor';
+      const assetType = inst.asset_type || t('portfolio.unknownAssetType');
       if (!assetGroups[assetType]) assetGroups[assetType] = 0;
       const txCurrency = tx.currency?.toUpperCase() || 'TRY';
       const fxRate = txCurrency === 'USD' ? (fxRates.USDTRY || 1) : txCurrency === 'EUR' ? (fxRates.EURTRY || 1) : 1;
       assetGroups[assetType] += ((tx.quantity || 0) * (tx.price || 0) + (tx.fees || 0)) * fxRate;
     }
     return Object.entries(assetGroups).map(([name, value]) => ({ name, value }));
-  }, [chartFilteredTransactions, instrumentMap, fxRates, isStale]);
+  }, [chartFilteredTransactions, instrumentMap, fxRates, isStale, t]);
 
   return (
     <div className="min-h-screen">
-      {/* Header & Action Bar */}
-      <div className="bnc-card mb-5">
-        <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-base font-bold text-bnc-textPri">Portföy</h2>
-          <div className="flex gap-2 flex-wrap items-center">
-            <button onClick={() => setShowForm(true)}
-              className="bnc-btn-primary flex items-center gap-1.5 text-xs" title="Yeni Alım">
-              <span>+</span> Yeni Alım
-            </button>
-            {onRefreshPrices && (
-              <button onClick={() => onRefreshPrices(loadData)} disabled={refreshing}
-                className="bnc-btn-secondary flex items-center gap-1.5 text-xs disabled:opacity-50" title="Güncelle">
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} /> Güncelle
-              </button>
-            )}
-            <button onClick={handleCreateSnapshot} disabled={creatingSnapshot}
-              className="bnc-btn-secondary flex items-center gap-1.5 text-xs disabled:opacity-50" title="Snapshot Al">
-              <Camera className="w-3.5 h-3.5" /> {creatingSnapshot ? '...' : 'Snapshot'}
-            </button>
-            <button onClick={exportToCSV}
-              className="bnc-btn-secondary flex items-center gap-1.5 text-xs" title="CSV indir">
-              <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">CSV</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div className="max-w-7xl mx-auto space-y-5">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="bnc-card p-4">
-            <span className="text-xs text-bnc-textTer">Toplam Değer</span>
+            <span className="text-xs text-bnc-textTer">{t('portfolio.totalValue')}</span>
             <p className="text-xl font-bold text-bnc-textPri mt-1">{formatCurrency(displayMarketValue)}</p>
           </div>
           <div className="bnc-card p-4">
-            <span className="text-xs text-bnc-textTer">Toplam Yatırım</span>
+            <span className="text-xs text-bnc-textTer">{t('portfolio.totalInvestment')}</span>
             <p className="text-xl font-bold text-bnc-textPri mt-1">{formatCurrency(displayInvested)}</p>
           </div>
           <div className={`bnc-card p-4 ${displayPL >= 0 ? 'border-bnc-green/30' : 'border-bnc-red/30'}`}>
-            <span className="text-xs text-bnc-textTer">Kar/Zarar</span>
+            <span className="text-xs text-bnc-textTer">{t('portfolio.profitLoss')}</span>
             <p className={`text-xl font-bold mt-1 ${displayPL >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>{formatCurrency(displayPL)}</p>
             <span className={`text-xs font-semibold ${displayPL >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
               {displayPL >= 0 ? '+' : ''}{displayPLPct.toFixed(2)}%
             </span>
           </div>
           <div className="bnc-card p-4">
-            <span className="text-xs text-bnc-textTer">Toplam Alım</span>
+            <span className="text-xs text-bnc-textTer">{t('portfolio.totalBuys')}</span>
             <p className="text-xl font-bold text-bnc-textPri mt-1">{sortedTransactions?.length || 0}</p>
-            <span className="text-xs text-bnc-textTer">işlem</span>
+            <span className="text-xs text-bnc-textTer">{t('portfolio.transactionsSuffix')}</span>
           </div>
         </div>
 
@@ -573,39 +491,29 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
         {isStale ? (
           <div className="bnc-card p-8 mb-5 text-center">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-bnc-accent mx-auto mb-3"></div>
-            <p className="text-bnc-textTer text-sm">Veriler güncelleniyor...</p>
+            <p className="text-bnc-textTer text-sm">{t('portfolio.dataUpdating')}</p>
           </div>
         ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="bnc-card p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-bnc-textPri">Birincil Tag Dağılımı</h2>
+              <h2 className="text-sm font-semibold text-bnc-textPri">{t('portfolio.primaryTagDist')}</h2>
               {chartFilter?.type === 'primary_tag' && (
-                <button onClick={() => setChartFilter(null)} className="text-xs text-bnc-accent hover:underline">Temizle ✕</button>
+                <button onClick={() => setChartFilter(null)} className="text-xs text-bnc-accent hover:underline">{t('portfolio.clearFilter')}</button>
               )}
             </div>
             <div className="flex flex-wrap gap-1.5 mb-4">
-              {(() => {
-                const tagGroups = {};
-                (chartFilteredTransactions || []).forEach(tx => {
-                  const tag = tx.primary_tag || 'Etiketsiz';
-                  if (!tagGroups[tag]) tagGroups[tag] = 0;
-                  const txCurrency = tx.currency?.toUpperCase() || 'TRY';
-                  const fxRate = txCurrency === 'USD' ? (fxRates.USDTRY || 1) : txCurrency === 'EUR' ? (fxRates.EURTRY || 1) : 1;
-                  tagGroups[tag] += ((tx.quantity || 0) * (tx.price || 0) + (tx.fees || 0)) * fxRate;
-                });
-                return Object.entries(tagGroups).map(([name, value], index) => (
-                  <button key={name}
-                    onClick={() => chartFilter?.type === 'primary_tag' && chartFilter.value === name ? setChartFilter(null) : setChartFilter({ type: 'primary_tag', value: name })}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
-                      chartFilter?.type === 'primary_tag' && chartFilter.value === name
-                        ? 'bg-bnc-accent text-bnc-bg' : 'bg-bnc-surfaceAlt text-bnc-textSec hover:bg-bnc-border'
-                    }`}
-                    style={{ borderLeft: `3px solid ${COLORS[index % COLORS.length]}` }}>
-                    {name} ({formatCurrency(value)})
-                  </button>
-                ));
-              })()}
+              {primaryTagChartData.map((entry, index) => (
+                <button key={entry.name}
+                  onClick={() => chartFilter?.type === 'primary_tag' && chartFilter.value === entry.name ? setChartFilter(null) : setChartFilter({ type: 'primary_tag', value: entry.name })}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                    chartFilter?.type === 'primary_tag' && chartFilter.value === entry.name
+                      ? 'bg-bnc-accent text-bnc-bg' : 'bg-bnc-surfaceAlt text-bnc-textSec hover:bg-bnc-border'
+                  }`}
+                  style={{ borderLeft: `3px solid ${COLORS[index % COLORS.length]}` }}>
+                  {entry.name} ({formatCurrency(entry.value)})
+                </button>
+              ))}
             </div>
             
             <ResponsiveContainer width="100%" height={300}>
@@ -645,14 +553,14 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
 
           <div className="bnc-card p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-bnc-textPri">İkincil Tag Dağılımı</h2>
+              <h2 className="text-sm font-semibold text-bnc-textPri">{t('portfolio.secondaryTagDist')}</h2>
               {chartFilter?.type === 'secondary_tag' && (
-                <button onClick={() => setChartFilter(null)} className="text-xs text-bnc-accent hover:underline">Temizle ✕</button>
+                <button onClick={() => setChartFilter(null)} className="text-xs text-bnc-accent hover:underline">{t('portfolio.clearFilter')}</button>
               )}
             </div>
             <div className="flex flex-wrap gap-1.5 mb-4">
               {secondaryTagChartData.length === 0 ? (
-                <span className="text-xs text-bnc-textTer">İkincil tag yok</span>
+                <span className="text-xs text-bnc-textTer">{t('portfolio.noSecondaryTags')}</span>
               ) : (
                 secondaryTagChartData.map(({ name, value }, index) => (
                   <button key={name}
@@ -671,7 +579,7 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
-                  data={secondaryTagChartData.length > 0 ? secondaryTagChartData : [{ name: '🚫 İkincil Tag Yok', value: 1 }]}
+                  data={secondaryTagChartData.length > 0 ? secondaryTagChartData : emptySecondaryPie}
                   cx="50%"
                   cy="50%"
                   labelLine={false}
@@ -680,7 +588,7 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
                   fill="#8884d8"
                   dataKey="value"
                   onClick={(data) => {
-                    if (data && data.name && data.name !== '🚫 İkincil Tag Yok') {
+                    if (data && data.name && data.name !== emptySecondaryPie[0].name) {
                       if (chartFilter?.type === 'secondary_tag' && chartFilter.value === data.name) {
                         setChartFilter(null);
                       } else {
@@ -689,7 +597,7 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
                     }
                   }}
                 >
-                  {(secondaryTagChartData.length > 0 ? secondaryTagChartData : [{ name: '🚫 İkincil Tag Yok', value: 1 }]).map((entry, index) => (
+                  {(secondaryTagChartData.length > 0 ? secondaryTagChartData : emptySecondaryPie).map((entry, index) => (
                     <Cell 
                       key={`cell-${index}`} 
                       fill={COLORS[index % COLORS.length]}
@@ -702,134 +610,81 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
               </PieChart>
             </ResponsiveContainer>
           </div>
+
+          <div className="bnc-card p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-bnc-textPri">
+                {t('portfolio.instrumentDist')}
+                {chartFilter && (
+                  <span className="text-bnc-accent font-normal ml-1.5">({chartFilter.value})</span>
+                )}
+              </h2>
+            </div>
+            
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={instrumentChartData.length > 0 ? instrumentChartData : emptyInstrumentPie}
+                  cx="50%"
+                  cy="50%"
+                  labelLine={false}
+                  label={({ name, percent }) => percent > 0.03 ? `${name} ${(percent * 100).toFixed(0)}%` : ''}
+                  outerRadius={80}
+                  fill="#8884d8"
+                  dataKey="value"
+                >
+                  {(instrumentChartData.length > 0 ? instrumentChartData : emptyInstrumentPie).map((entry, index) => (
+                    <Cell key={`cell-inst-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip contentStyle={{ backgroundColor: '#1E2329', border: '1px solid #2B3139', borderRadius: '8px', color: '#EAECEF' }} formatter={(value) => formatCurrency(value)} />
+                <Legend wrapperStyle={{ color: '#B7BDC6', fontSize: '12px' }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
         </div>
         )}
 
-        {/* Filters */}
-        <div className="bnc-card overflow-hidden">
-          <div className="p-3 border-b border-bnc-border">
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <Filter className="w-4 h-4 text-bnc-textTer" />
-                <span className="text-xs font-medium text-bnc-textSec">Filtreler</span>
-                {activeFilterCount > 0 && (
-                  <span className="bg-bnc-accent/15 text-bnc-accent text-[10px] font-semibold px-1.5 py-0.5 rounded">{activeFilterCount}</span>
-                )}
+        {/* Search & Sort */}
+        <div className="bnc-card p-3 space-y-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bnc-textTer" />
+            <input type="text" value={searchInput} onChange={(e) => setSearchInput(e.target.value)}
+              placeholder={t('portfolio.searchPlaceholder')}
+              className="bnc-input w-full text-sm py-2.5 pl-9 pr-9" />
+            {searchInput && !isStale && (
+              <button onClick={() => setSearchInput('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-bnc-textTer hover:text-bnc-textSec transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {isStale && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-bnc-accent"></div>
               </div>
-              <div className="flex-1 min-w-[180px] relative">
-                <input type="text" value={searchInput} onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Varlık ara..." className="bnc-input w-full text-xs py-2" />
-                {isStale && (
-                  <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
-                    <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-bnc-accent"></div>
-                  </div>
-                )}
-              </div>
-              <div className="flex gap-1.5 flex-wrap">
-                <select value={filter.instrument} onChange={(e) => startTransition(() => setFilter({ ...filter, instrument: e.target.value }))} className="bnc-input text-xs py-2">
-                  <option value="all">Tüm Varlıklar</option>
-                  {instruments.map(inst => <option key={inst.id} value={inst.id}>{inst.symbol}</option>)}
-                </select>
-                <select value={filter.plStatus} onChange={(e) => startTransition(() => setFilter({ ...filter, plStatus: e.target.value }))} className="bnc-input text-xs py-2">
-                  <option value="all">Tüm Durumlar</option>
-                  <option value="profit">Karlı</option>
-                  <option value="loss">Zararlı</option>
-                  <option value="breakeven">Başabaş</option>
-                  <option value="no-price">Fiyat Yok</option>
-                </select>
-                <button onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                  className={`px-2.5 py-2 rounded-lg text-xs font-medium ${showAdvancedFilters ? 'bg-bnc-accent/15 text-bnc-accent' : 'bg-bnc-surfaceAlt text-bnc-textSec hover:bg-bnc-border'}`}>
-                  {showAdvancedFilters ? '▲ Gelişmiş' : '▼ Gelişmiş'}
-                </button>
-                {activeFilterCount > 0 && (
-                  <button onClick={() => { setSearchInput(''); setFilter({ instrument: 'all', tag: 'all', currency: 'all', account: 'all', dateFrom: '', dateTo: '', plStatus: 'all', search: '' }); }}
-                    className="px-2.5 py-2 bg-bnc-red/15 text-bnc-red rounded-lg text-xs font-medium hover:bg-bnc-red/25">✕ Temizle</button>
-                )}
-              </div>
-            </div>
+            )}
           </div>
 
-          {showAdvancedFilters && (
-            <div className="p-3 bg-bnc-surfaceAlt/50 border-b border-bnc-border">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Hesap</label>
-                  <select value={filter.account} onChange={(e) => setFilter({ ...filter, account: e.target.value })} className="bnc-input w-full text-xs py-2">
-                    <option value="all">Tümü</option>
-                    {accounts.map(acc => <option key={acc.id} value={acc.id}>{acc.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Etiket</label>
-                  <select value={filter.tag} onChange={(e) => setFilter({ ...filter, tag: e.target.value })} className="bnc-input w-full text-xs py-2">
-                    <option value="all">Tümü</option>
-                    <option value="no-tag">Etiketsiz</option>
-                    {uniqueTags.map(tag => <option key={tag} value={tag}>{tag}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Para Birimi</label>
-                  <select value={filter.currency} onChange={(e) => setFilter({ ...filter, currency: e.target.value })} className="bnc-input w-full text-xs py-2">
-                    <option value="all">Tümü</option>
-                    <option value="TRY">TRY</option>
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Sıralama</label>
-                  <select value={`${sortBy.field}-${sortBy.order}`} onChange={(e) => { const [f,o] = e.target.value.split('-'); setSortBy({field:f,order:o}); }} className="bnc-input w-full text-xs py-2">
-                    <option value="timestamp-desc">En Yeni</option>
-                    <option value="timestamp-asc">En Eski</option>
-                    <option value="value-desc">Değer ↓</option>
-                    <option value="value-asc">Değer ↑</option>
-                    <option value="pl-desc">K/Z ↓</option>
-                    <option value="pl-asc">K/Z ↑</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Başlangıç</label>
-                  <input type="date" value={filter.dateFrom} onChange={(e) => setFilter({...filter, dateFrom: e.target.value})} className="bnc-input w-full text-xs py-2" />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-medium text-bnc-textTer mb-1">Bitiş</label>
-                  <input type="date" value={filter.dateTo} onChange={(e) => setFilter({...filter, dateTo: e.target.value})} className="bnc-input w-full text-xs py-2" />
-                </div>
-              </div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex gap-1 flex-wrap">
+              {sortOptions.map(opt => {
+                const active = sortBy.field === opt.field && sortBy.order === opt.order;
+                return (
+                  <button key={`${opt.field}-${opt.order}`}
+                    onClick={() => setSortBy({ field: opt.field, order: opt.order })}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                      active
+                        ? 'bg-bnc-accent text-bnc-bg'
+                        : 'bg-bnc-surfaceAlt text-bnc-textTer hover:bg-bnc-border hover:text-bnc-textSec'
+                    }`}>
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
-          )}
-
-          {!showAdvancedFilters && (
-            <div className="px-3 py-2 border-t border-bnc-border">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[10px] font-medium text-bnc-textTer mr-1">Hızlı:</span>
-                {[
-                  { label: 'Karlı', key: 'plStatus', val: 'profit', clr: 'bnc-green' },
-                  { label: 'Zararlı', key: 'plStatus', val: 'loss', clr: 'bnc-red' },
-                  { label: 'USD', key: 'currency', val: 'USD', clr: 'bnc-accent' },
-                  { label: 'TRY', key: 'currency', val: 'TRY', clr: 'bnc-accent' },
-                ].map(c => (
-                  <button key={c.label} onClick={() => setFilter({...filter, [c.key]: c.val})}
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
-                      filter[c.key] === c.val ? `bg-${c.clr}/15 text-${c.clr}` : 'bg-bnc-surfaceAlt text-bnc-textTer hover:bg-bnc-border'
-                    }`}>{c.label}</button>
-                ))}
-                {uniqueTags.slice(0, 3).map(tag => (
-                  <button key={tag} onClick={() => setFilter({...filter, tag})}
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold ${filter.tag === tag ? 'bg-bnc-accent/15 text-bnc-accent' : 'bg-bnc-surfaceAlt text-bnc-textTer hover:bg-bnc-border'}`}>{tag}</button>
-                ))}
-                {accounts.filter(a => ['MİDAS','OSMANLI','Fiziki'].includes(a.name)).map(acc => (
-                  <button key={acc.id} onClick={() => setFilter({...filter, account: acc.id.toString()})}
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold ${filter.account === acc.id.toString() ? 'bg-bnc-accent/15 text-bnc-accent' : 'bg-bnc-surfaceAlt text-bnc-textTer hover:bg-bnc-border'}`}>{acc.name}</button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="px-3 py-1.5 bg-bnc-surfaceAlt/50 text-xs text-bnc-textTer">
-            <span className="font-medium text-bnc-textSec">{sortedTransactions?.length || 0}</span> işlem gösteriliyor
-            {activeFilterCount > 0 && <span className="ml-1.5">(toplam {transactions.length})</span>}
-            {isStale && <span className="ml-1.5">(filtreleniyor...)</span>}
+            <span className="text-xs text-bnc-textTer whitespace-nowrap">
+              <span className="font-medium text-bnc-textSec">{sortedTransactions?.length || 0}</span> {t('portfolio.positionsSuffix')}
+            </span>
           </div>
         </div>
 
@@ -838,20 +693,20 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
           {loading ? (
             <div className="p-8 text-center">
               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-bnc-accent mx-auto"></div>
-              <p className="mt-3 text-bnc-textTer text-sm">Yükleniyor...</p>
+              <p className="mt-3 text-bnc-textTer text-sm">{t('common.loading')}</p>
             </div>
           ) : (sortedTransactions?.length || 0) === 0 ? (
             <div className="p-8 text-center">
               {transactions.length === 0 ? (
                 <>
-                  <p className="text-bnc-textTer">Henüz alım kaydı yok</p>
-                  <button onClick={() => setShowForm(true)} className="mt-3 bnc-btn-primary">İlk Alımı Ekle</button>
+                  <p className="text-bnc-textTer">{t('portfolio.emptyNoBuys')}</p>
+                  <button onClick={() => setShowForm(true)} className="mt-3 bnc-btn-primary">{t('portfolio.emptyAddFirst')}</button>
                 </>
               ) : (
                 <>
-                  <p className="text-bnc-textTer">Filtrelere uygun işlem bulunamadı</p>
-                  <button onClick={() => { setSearchInput(''); setFilter({ instrument:'all', tag:'all', currency:'all', account:'all', dateFrom:'', dateTo:'', plStatus:'all', search:'' }); }}
-                    className="mt-3 bnc-btn-primary">Filtreleri Temizle</button>
+                  <p className="text-bnc-textTer">{t('portfolio.emptyNoMatch')}</p>
+                  <button onClick={() => { setSearchInput(''); setFilter(f => ({ ...f, search: '' })); }}
+                    className="mt-3 bnc-btn-primary">{t('portfolio.emptyClearSearch')}</button>
                 </>
               )}
             </div>
@@ -862,23 +717,25 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
                 <thead>
                   <tr className="bg-bnc-surfaceAlt/50">
                     {[
-                      { label: 'Tarih', field: 'timestamp', align: 'left' },
-                      { label: 'Varlık', field: null, align: 'left' },
-                      { label: 'Adet', field: 'quantity', align: 'right' },
-                      { label: 'Alış Fiyatı', field: null, align: 'right' },
-                      { label: 'Güncel Fiyat', field: null, align: 'right' },
-                      { label: 'K/Z', field: 'pl', align: 'right' },
-                      { label: 'Güncel Değer', field: 'value', align: 'right' },
-                      { label: 'Birincil', field: null, align: 'left' },
-                      { label: 'İkincil', field: null, align: 'left' },
-                      { label: 'İşlem', field: null, align: 'center' },
-                    ].map(col => (
+                      { label: t('portfolio.table.date'), field: 'timestamp', align: 'left' },
+                      { label: t('portfolio.table.asset'), field: null, align: 'left' },
+                      { label: t('portfolio.table.quantity'), field: 'quantity', align: 'right' },
+                      { label: t('portfolio.table.buyPrice'), field: null, align: 'right' },
+                      { label: t('portfolio.table.currentPrice'), field: null, align: 'right' },
+                      { label: t('portfolio.table.pl'), field: 'pl', align: 'right' },
+                      { label: t('portfolio.table.currentValue'), field: 'value', align: 'right' },
+                      { label: t('portfolio.table.primary'), field: null, align: 'left' },
+                      { label: t('portfolio.table.secondary'), field: null, align: 'left' },
+                      { label: t('portfolio.table.actions'), field: null, align: 'center' },
+                    ].map(col => {
+                      const alignClass = { left: 'text-left', right: 'text-right', center: 'text-center' }[col.align] || 'text-left';
+                      return (
                       <th key={col.label}
-                        className={`px-4 py-2.5 text-${col.align} text-[11px] font-medium text-bnc-textTer uppercase tracking-wider ${col.field ? 'cursor-pointer hover:bg-bnc-surfaceAlt transition-colors' : ''}`}
+                        className={`px-4 py-2.5 ${alignClass} text-[11px] font-medium text-bnc-textTer uppercase tracking-wider ${col.field ? 'cursor-pointer hover:bg-bnc-surfaceAlt transition-colors' : ''}`}
                         onClick={col.field ? () => setSortBy({ field: col.field, order: sortBy.field === col.field && sortBy.order === 'desc' ? 'asc' : 'desc' }) : undefined}>
                         {col.label} {col.field && sortBy.field === col.field && (sortBy.order === 'desc' ? '▼' : '▲')}
                       </th>
-                    ))}
+                    );})}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-bnc-border">
@@ -936,14 +793,15 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
                         </td>
                         <td className="px-4 py-2.5 text-center">
                           <div className="flex items-center justify-center gap-1">
-                            <button onClick={() => setEditingTransaction(tx)} className="p-1 text-bnc-textTer hover:text-bnc-accent transition-colors" title="Düzenle"><Edit2 className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => setSellingTransaction(tx)} className="p-1 text-bnc-textTer hover:text-bnc-green transition-colors" title="Sat"><DollarSign className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => setAddingToTransaction(tx)} className="p-1 text-bnc-textTer hover:text-bnc-accent transition-colors" title={t('portfolio.action.addPosition')}><PlusCircle className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => setEditingTransaction(tx)} className="p-1 text-bnc-textTer hover:text-bnc-accent transition-colors" title={t('portfolio.action.edit')}><Edit2 className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => setSellingTransaction(tx)} className="p-1 text-bnc-textTer hover:text-bnc-green transition-colors" title={t('portfolio.action.sell')}><DollarSign className="w-3.5 h-3.5" /></button>
                             <button onClick={async () => {
-                              if(confirm(`Silmek istediğinizden emin misiniz?\n${getInstrumentName(tx.instrument_id)}`)) {
-                                try { await deleteTransaction(tx.id); loadData(); showSuccess('Silindi'); }
-                                catch(e) { showError('Hata: '+(e.response?.data?.detail||e.message)); }
+                              if(confirm(`${t('portfolio.confirm.delete')}\n${getInstrumentName(tx.instrument_id)}`)) {
+                                try { await deleteTransaction(tx.id); loadData(); showSuccess(t('portfolio.toast.deleted')); }
+                                catch(e) { showError(t('portfolio.toast.error', { detail: e.response?.data?.detail||e.message })); }
                               }
-                            }} className="p-1 text-bnc-textTer hover:text-bnc-red transition-colors" title="Sil"><Trash2 className="w-3.5 h-3.5" /></button>
+                            }} className="p-1 text-bnc-textTer hover:text-bnc-red transition-colors" title={t('portfolio.action.delete')}><Trash2 className="w-3.5 h-3.5" /></button>
                           </div>
                         </td>
                       </tr>
@@ -974,17 +832,18 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
                         )}
                       </div>
                       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-bnc-textTer">
-                        <span>Adet: {tx.quantity?.toFixed(2)}</span>
-                        <span>Fiyat: {formatCurrency(buyPriceTRY)}</span>
-                        {currentPriceTRY && <span>Güncel: {formatCurrency(currentPriceTRY)}</span>}
+                        <span>{t('portfolio.mobile.quantity')} {tx.quantity?.toFixed(2)}</span>
+                        <span>{t('portfolio.mobile.price')} {formatCurrency(buyPriceTRY)}</span>
+                        {currentPriceTRY && <span>{t('portfolio.mobile.current')} {formatCurrency(currentPriceTRY)}</span>}
                       </div>
                       <div className="flex items-center justify-end gap-1 mt-2 pt-2 border-t border-bnc-border">
+                        <button onClick={() => setAddingToTransaction(tx)} className="p-1.5 text-bnc-textTer hover:text-bnc-accent rounded" title={t('portfolio.action.addPosition')}><PlusCircle className="w-3.5 h-3.5" /></button>
                         <button onClick={() => setEditingTransaction(tx)} className="p-1.5 text-bnc-textTer hover:text-bnc-accent rounded"><Edit2 className="w-3.5 h-3.5" /></button>
                         <button onClick={() => setSellingTransaction(tx)} className="p-1.5 text-bnc-textTer hover:text-bnc-green rounded"><DollarSign className="w-3.5 h-3.5" /></button>
                         <button onClick={async () => {
-                          if(confirm(`Silmek istediğinizden emin misiniz?`)) {
-                            try { await deleteTransaction(tx.id); loadData(); showSuccess('Silindi'); }
-                            catch(e) { showError('Hata: '+(e.response?.data?.detail||e.message)); }
+                          if(confirm(t('portfolio.confirm.delete'))) {
+                            try { await deleteTransaction(tx.id); loadData(); showSuccess(t('portfolio.toast.deleted')); }
+                            catch(e) { showError(t('portfolio.toast.error', { detail: String(e.response?.data?.detail || e.message) })); }
                           }
                         }} className="p-1.5 text-bnc-textTer hover:text-bnc-red rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                       </div>
@@ -1025,10 +884,27 @@ function TransactionsPage({ onRefreshPrices, refreshing }) {
           transaction={sellingTransaction}
           instrument={instrumentMap.get(sellingTransaction.instrument_id)}
           currentPrice={prices[sellingTransaction.instrument_id]?.current_price_try || 0}
+          accounts={accounts}
           onClose={() => setSellingTransaction(null)}
           onSuccess={() => {
             loadData();
             setSellingTransaction(null);
+          }}
+        />
+      )}
+
+      {/* Add Position Form Modal */}
+      {addingToTransaction && (
+        <AddPositionForm
+          transaction={addingToTransaction}
+          instrument={instrumentMap.get(addingToTransaction.instrument_id)}
+          currentPrice={prices[addingToTransaction.instrument_id]?.current_price_try || 0}
+          allTransactions={transactions}
+          fxRates={fxRates}
+          onClose={() => setAddingToTransaction(null)}
+          onSuccess={() => {
+            loadData();
+            setAddingToTransaction(null);
           }}
         />
       )}

@@ -1,25 +1,27 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useToast } from './components/Toast';
 import { getPortfolioSummary, fetchAllPrices } from './services/api';
 import { useAuth } from './contexts/AuthContext';
+import { useLanguage } from './contexts/LanguageContext';
 import Layout from './components/Layout';
-import TransactionsPage from './components/TransactionsPage';
-import SettingsPage from './components/SettingsPage';
-import PerformanceAnalysisPage from './components/PerformanceAnalysisPage';
-import TWRPage from './components/TWRPage';
-import ComparisonPage from './components/ComparisonPage';
-import SalesHistoryPage from './components/SalesHistoryPage';
-import ScannerPage from './components/ScannerPage';
-import AlertsPage from './components/AlertsPage';
-import NotificationsPage from './components/NotificationsPage';
-import DashboardPage from './components/DashboardPage';
 import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
+
+const DashboardPage = lazy(() => import('./components/DashboardPage'));
+const TransactionsPage = lazy(() => import('./components/TransactionsPage'));
+const SettingsPage = lazy(() => import('./components/SettingsPage'));
+const PerformanceAnalysisPage = lazy(() => import('./components/PerformanceAnalysisPage'));
+const TWRPage = lazy(() => import('./components/TWRPage'));
+const ComparisonPage = lazy(() => import('./components/ComparisonPage'));
+const SalesHistoryPage = lazy(() => import('./components/SalesHistoryPage'));
+const CashFlowsPage = lazy(() => import('./components/CashFlowsPage'));
+const InsightsPage = lazy(() => import('./components/InsightsPage'));
 
 function App() {
   const { user, loading: authLoading } = useAuth();
   const { showSuccess, showError } = useToast();
+  const { t } = useLanguage();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -45,23 +47,15 @@ function App() {
   const handleRefreshPrices = async (onComplete) => {
     setRefreshing(true);
     try {
-      const response = await fetchAllPrices();
-      await loadSummary();
-
+      await fetchAllPrices();
+      showSuccess(t('common.prices.refreshStarted'));
       if (onComplete) {
         await onComplete();
       }
       window.dispatchEvent(new CustomEvent('portfolio-prices-refreshed'));
-
-      const result = response.data;
-      let msg = `Fiyatlar güncellendi! ${result.success_count}/${result.total} başarılı (${result.duration_seconds}s)`;
-      if (result.failed_count > 0) {
-        msg += ` - ${result.failed_count} başarısız`;
-      }
-      showSuccess(msg);
     } catch (err) {
       console.error('Error refreshing prices:', err);
-      showError('Fiyatlar güncellenirken hata oluştu: ' + (err.response?.data?.detail || err.message));
+      showError(t('common.prices.refreshError', { detail: err.response?.data?.detail || err.message }));
     } finally {
       setRefreshing(false);
     }
@@ -81,7 +75,7 @@ function App() {
       <div className="min-h-screen bg-bnc-bg flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-bnc-accent mx-auto"></div>
-          <p className="mt-4 text-bnc-textSec">Yükleniyor...</p>
+          <p className="mt-4 text-bnc-textSec">{t('common.loading')}</p>
         </div>
       </div>
     );
@@ -102,7 +96,7 @@ function App() {
       <div className="min-h-screen bg-bnc-bg flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-bnc-accent mx-auto"></div>
-          <p className="mt-4 text-bnc-textSec">Yükleniyor...</p>
+          <p className="mt-4 text-bnc-textSec">{t('common.loading')}</p>
         </div>
       </div>
     );
@@ -112,15 +106,20 @@ function App() {
     return (
       <div className="min-h-screen bg-bnc-bg flex items-center justify-center">
         <div className="bg-bnc-red/10 border border-bnc-red/30 rounded-xl p-6 max-w-md">
-          <h2 className="text-bnc-red font-semibold mb-2">Hata</h2>
+          <h2 className="text-bnc-red font-semibold mb-2">{t('common.error')}</h2>
           <p className="text-bnc-textSec">{error}</p>
-          <button onClick={loadSummary} className="mt-4 bnc-btn-primary">Tekrar Dene</button>
+          <button onClick={loadSummary} className="mt-4 bnc-btn-primary">{t('common.retry')}</button>
         </div>
       </div>
     );
   }
 
-  // Logged in - main layout with routes
+  const suspenseFallback = (
+    <div className="flex items-center justify-center py-20">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-bnc-accent" />
+    </div>
+  );
+
   return (
     <Routes>
       <Route path="/login" element={<Navigate to="/" replace />} />
@@ -137,24 +136,15 @@ function App() {
           />
         }
       >
-        <Route index element={<DashboardPage />} />
-        <Route
-          path="portfolio"
-          element={
-            <TransactionsPage
-              onRefreshPrices={handleRefreshPrices}
-              refreshing={refreshing}
-            />
-          }
-        />
-        <Route path="performance" element={<PerformanceAnalysisPage />} />
-        <Route path="twr" element={<TWRPage />} />
-        <Route path="comparison" element={<ComparisonPage />} />
-        <Route path="sales" element={<SalesHistoryPage />} />
-        <Route path="scanner" element={<ScannerPage />} />
-        <Route path="alerts" element={<AlertsPage />} />
-        <Route path="notifications" element={<NotificationsPage />} />
-        <Route path="settings" element={<SettingsPage />} />
+        <Route index element={<Suspense fallback={suspenseFallback}><DashboardPage /></Suspense>} />
+        <Route path="portfolio" element={<Suspense fallback={suspenseFallback}><TransactionsPage /></Suspense>} />
+        <Route path="performance" element={<Suspense fallback={suspenseFallback}><PerformanceAnalysisPage /></Suspense>} />
+        <Route path="twr" element={<Suspense fallback={suspenseFallback}><TWRPage /></Suspense>} />
+        <Route path="comparison" element={<Suspense fallback={suspenseFallback}><ComparisonPage /></Suspense>} />
+        <Route path="sales" element={<Suspense fallback={suspenseFallback}><SalesHistoryPage /></Suspense>} />
+        <Route path="cash-flows" element={<Suspense fallback={suspenseFallback}><CashFlowsPage /></Suspense>} />
+        <Route path="insights" element={<Suspense fallback={suspenseFallback}><InsightsPage /></Suspense>} />
+        <Route path="settings" element={<Suspense fallback={suspenseFallback}><SettingsPage /></Suspense>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

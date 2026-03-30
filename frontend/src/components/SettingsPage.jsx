@@ -1,365 +1,506 @@
-import { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, Calendar, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
-import { getPortfolioSnapshots, compareSnapshots, createPortfolioSnapshot } from '../services/api';
-import SnapshotCalendar from './SnapshotCalendar';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  Plus, Pencil, Trash2, X, Check, Search, Users,
+  Wallet, Package, Camera, RefreshCw, Clock, Target,
+} from 'lucide-react';
+import {
+  getAccounts, createAccount, updateAccount, deleteAccount,
+  getInstruments, createInstrument, updateInstrument, deleteInstrument,
+  getPortfolioSnapshots, deleteSnapshot,
+  getAdminUsers, updateAdminUser, deleteAdminUser, toggleUserAdmin,
+  fetchPrice, updateManualPrice,
+  getModelPortfolio, updateModelPortfolio,
+} from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { useLanguage } from '../contexts/LanguageContext';
 import { useToast } from './Toast';
 
-function PerformanceAnalysisPage() {
+
+const FormRow = ({ children }) => <div className="px-4 py-3 bg-bnc-surfaceAlt/30 border-b border-bnc-border">{children}</div>;
+
+export default function SettingsPage() {
+  const { user, refreshUser } = useAuth();
+  const { language, setLanguage, t, locale } = useLanguage();
   const { showSuccess, showError } = useToast();
+  const [tab, setTab] = useState('instruments');
+  const [search, setSearch] = useState('');
+
+  const fmt = useCallback((v) => v == null ? '-' : new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(v), [locale]);
+  const fmtDate = useCallback((d) => d ? new Date(d).toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-', [locale]);
+
+  const tabs = useMemo(() => [
+    { id: 'instruments', icon: Package, label: t('settings.tabs.instruments') },
+    { id: 'accounts', icon: Wallet, label: t('settings.tabs.accounts') },
+    { id: 'snapshots', icon: Camera, label: t('settings.tabs.snapshots') },
+    { id: 'model-portfolio', icon: Target, label: t('settings.tabs.modelPortfolio') },
+    { id: 'users', icon: Users, label: t('settings.tabs.users') },
+  ], [t]);
+
+  const [accounts, setAccounts] = useState([]);
+  const [instruments, setInstruments] = useState([]);
   const [snapshots, setSnapshots] = useState([]);
-  const [selectedSnapshot1, setSelectedSnapshot1] = useState(null);
-  const [selectedSnapshot2, setSelectedSnapshot2] = useState(null);
-  const [comparison, setComparison] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [creatingSnapshot, setCreatingSnapshot] = useState(false);
-  const [selectedInstrument, setSelectedInstrument] = useState('ALL');
-  const [sortField, setSortField] = useState('value_change_pct');
-  const [sortDirection, setSortDirection] = useState('desc');
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshingId, setRefreshingId] = useState(null);
 
-  useEffect(() => {
-    loadSnapshots();
-  }, []);
+  const [editingItem, setEditingItem] = useState(null);
+  const [formData, setFormData] = useState({});
+  const [showForm, setShowForm] = useState(false);
+  const [manualPriceId, setManualPriceId] = useState(null);
+  const [manualPriceVal, setManualPriceVal] = useState('');
+  const [modelTargets, setModelTargets] = useState([]);
+  const [modelSaving, setModelSaving] = useState(false);
 
-  const handleCreateSnapshot = async () => {
-    setCreatingSnapshot(true);
+  const load = useCallback(async (section) => {
+    setLoading(true);
     try {
-      const res = await createPortfolioSnapshot();
-      showSuccess(`Snapshot oluşturuldu! ${res.data.total_positions} pozisyon kaydedildi`);
-      await loadSnapshots();
-    } catch (err) {
-      showError('Snapshot oluşturulamadı: ' + (err.response?.data?.detail || err.message));
-    } finally {
-      setCreatingSnapshot(false);
-    }
-  };
+      if (section === 'accounts') { const r = await getAccounts(); setAccounts(r.data || []); }
+      else if (section === 'instruments') { const r = await getInstruments(); setInstruments(r.data || []); }
+      else if (section === 'snapshots') { const r = await getPortfolioSnapshots(200); setSnapshots(r.data || []); }
+      else if (section === 'model-portfolio') { const r = await getModelPortfolio(); setModelTargets(r.data || []); }
+      else if (section === 'users' && user?.is_admin) { const r = await getAdminUsers(); setUsers(r.data || []); }
+    } catch { showError(t('settings.error.loadFailed')); }
+    finally { setLoading(false); }
+  }, [user?.is_admin, showError, t]);
 
-  const loadSnapshots = async () => {
+  useEffect(() => { load(tab); setShowForm(false); setSearch(''); }, [tab, load]);
+
+  const startAdd = (defaults = {}) => { setEditingItem(null); setFormData(defaults); setShowForm(true); };
+  const startEdit = (item) => { setEditingItem(item); setFormData({ ...item }); setShowForm(true); };
+  const cancelForm = () => { setShowForm(false); setEditingItem(null); setFormData({}); };
+
+  const save = async (section, createFn, updateFn) => {
     try {
-      const res = await getPortfolioSnapshots(50);
-      setSnapshots(res.data);
-      if (res.data.length >= 2) {
-        setSelectedSnapshot1(res.data[0].id);
-        setSelectedSnapshot2(res.data[res.data.length - 1].id);
-      }
-    } catch (err) {
-      console.error('Error loading snapshots:', err);
-    } finally {
-      setLoading(false);
-    }
+      if (editingItem) await updateFn(editingItem.id, formData);
+      else await createFn(formData);
+      showSuccess(editingItem ? t('settings.toast.updated') : t('settings.toast.created'));
+      cancelForm(); load(section);
+    } catch (e) { showError(e.response?.data?.detail || t('common.error')); }
   };
 
-  useEffect(() => {
-    if (selectedSnapshot1 && selectedSnapshot2 && selectedSnapshot1 !== selectedSnapshot2) {
-      loadComparison();
-    }
-  }, [selectedSnapshot1, selectedSnapshot2]);
+  const del = async (section, deleteFn, id, labelKey) => {
+    const label = t(labelKey);
+    if (!confirm(t('settings.confirmDelete', { label }))) return;
+    try { await deleteFn(id); showSuccess(t('settings.toast.deleted')); load(section); }
+    catch { showError(t('settings.error.deleteFailed')); }
+  };
 
-  const loadComparison = async () => {
+  const handleRefreshPrice = async (id) => {
+    setRefreshingId(id);
+    try { await fetchPrice(id); showSuccess(t('settings.toast.priceUpdated')); load('instruments'); }
+    catch { showError(t('settings.error.updateFailed')); }
+    finally { setRefreshingId(null); }
+  };
+
+  const handleManualPrice = async (id) => {
+    const price = parseFloat(manualPriceVal);
+    if (isNaN(price) || price <= 0) { showError(t('settings.error.invalidPrice')); return; }
     try {
-      const res = await compareSnapshots(selectedSnapshot1, selectedSnapshot2);
-      setComparison(res.data);
-    } catch (err) {
-      console.error('Error comparing snapshots:', err);
-    }
+      await updateManualPrice(id, price);
+      showSuccess(t('settings.toast.priceUpdated'));
+      setManualPriceId(null);
+      setManualPriceVal('');
+      load('instruments');
+    } catch { showError(t('settings.error.updateFailed')); }
   };
 
-  const formatCurrency = (value) =>
-    new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 2 }).format(value);
-
-  const formatDate = (dateString) =>
-    new Date(dateString).toLocaleDateString('tr-TR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('desc');
-    }
-  };
-
-  const getSortedInstruments = () => {
-    if (!comparison) return [];
-    return [...comparison.instruments].sort((a, b) => {
-      let aVal, bVal;
-      switch (sortField) {
-        case 'symbol': aVal = a.symbol.toLowerCase(); bVal = b.symbol.toLowerCase(); break;
-        case 'previous_price': aVal = a.previous_price; bVal = b.previous_price; break;
-        case 'current_price': aVal = a.current_price; bVal = b.current_price; break;
-        case 'price_change_pct': aVal = a.price_change_pct; bVal = b.price_change_pct; break;
-        case 'previous_value': aVal = a.previous_value; bVal = b.previous_value; break;
-        case 'current_value': aVal = a.current_value; bVal = b.current_value; break;
-        case 'value_change_pct': aVal = a.value_change_pct; bVal = b.value_change_pct; break;
-        case 'quantity_change': aVal = a.current_quantity - a.previous_quantity; bVal = b.current_quantity - b.previous_quantity; break;
-        default: return 0;
-      }
-      if (typeof aVal === 'string') return sortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-      return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
-    });
-  };
-
-  const prepareChartData = () => {
-    if (!comparison) return [];
-    if (selectedInstrument === 'ALL') {
-      return [
-        { date: new Date(comparison.snapshot1.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: comparison.snapshot1.total_value, investment: comparison.snapshot1.total_cost },
-        { date: new Date(comparison.snapshot2.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: comparison.snapshot2.total_value, investment: comparison.snapshot2.total_cost },
-      ];
-    }
-    const inst = comparison.instruments.find(i => i.instrument_id === parseInt(selectedInstrument));
-    if (!inst) return [];
-    return [
-      { date: new Date(comparison.snapshot1.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: inst.previous_value },
-      { date: new Date(comparison.snapshot2.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: inst.current_value },
-    ];
-  };
-
-  const SortHeader = ({ field, label, align = 'right' }) => (
-    <th
-      onClick={() => handleSort(field)}
-      className={`px-4 py-2.5 text-xs font-medium text-bnc-textSec uppercase tracking-wider cursor-pointer hover:bg-bnc-surfaceAlt ${align === 'left' ? 'text-left' : 'text-right'}`}
-    >
-      <div className={`flex items-center ${align === 'left' ? '' : 'justify-end'}`}>
-        {label}
-        {sortField === field
-          ? (sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 ml-1 text-bnc-accent" /> : <ArrowDown className="w-3 h-3 ml-1 text-bnc-accent" />)
-          : <ArrowUpDown className="w-3 h-3 ml-1 opacity-40 text-bnc-textTer" />
-        }
-      </div>
-    </th>
-  );
-
-  if (loading) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center bg-bnc-bg">
-        <div className="animate-spin rounded-full h-10 w-10 border-2 border-bnc-border border-t-bnc-accent" />
-      </div>
+  const filteredInstruments = useMemo(() => {
+    if (!search) return instruments;
+    const q = search.toLowerCase();
+    return instruments.filter(i =>
+      (i.symbol || '').toLowerCase().includes(q) ||
+      (i.asset_type || '').toLowerCase().includes(q) || (i.market || '').toLowerCase().includes(q)
     );
-  }
+  }, [instruments, search]);
 
-  if (snapshots.length < 2) {
-    return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 bg-bnc-bg min-h-[60vh]">
-        <div className="bnc-card p-6 text-center">
-          <Calendar className="w-12 h-12 mx-auto text-bnc-textTer mb-3" />
-          <h2 className="text-lg font-semibold text-bnc-textPri mb-1.5">Yeterli snapshot yok</h2>
-          <p className="text-sm text-bnc-textSec mb-4">Performans analizi için en az 2 snapshot gerekiyor. (Mevcut: {snapshots.length})</p>
-          <button
-            onClick={handleCreateSnapshot}
-            disabled={creatingSnapshot}
-            className="bnc-btn-primary disabled:opacity-50 disabled:pointer-events-none"
-          >
-            {creatingSnapshot ? 'Oluşturuluyor...' : 'Snapshot oluştur'}
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const filteredAccounts = useMemo(() => {
+    if (!search) return accounts;
+    const q = search.toLowerCase();
+    return accounts.filter(a => (a.name || '').toLowerCase().includes(q));
+  }, [accounts, search]);
+
+  const filteredSnapshots = useMemo(() => {
+    if (!search) return snapshots;
+    const q = search.toLowerCase();
+    return snapshots.filter(s => fmtDate(s.snapshot_date).toLowerCase().includes(q));
+  }, [snapshots, search, fmtDate]);
+
+  const visibleTabs = tabs.filter(tabItem => tabItem.id !== 'users' || user?.is_admin);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 bg-bnc-bg">
-      <div className="mb-4">
-        <h1 className="text-xl font-bold text-bnc-textPri tracking-tight">Performans analizi</h1>
+    <div className="flex gap-4 min-h-[calc(100vh-120px)]">
+      {/* Sidebar tabs */}
+      <div className="hidden md:flex flex-col w-48 shrink-0">
+        <div className="bnc-card overflow-hidden sticky top-4">
+          {visibleTabs.map(tabItem => (
+            <button key={tabItem.id} onClick={() => setTab(tabItem.id)}
+              className={`w-full flex items-center gap-2.5 px-4 py-3 text-xs font-medium transition-colors border-l-2 ${
+                tab === tabItem.id
+                  ? 'bg-bnc-accent/10 text-bnc-accent border-bnc-accent'
+                  : 'text-bnc-textSec hover:bg-bnc-surfaceAlt/50 hover:text-bnc-textPri border-transparent'
+              }`}>
+              <tabItem.icon className="w-4 h-4" />
+              {tabItem.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="bnc-card p-4 mb-4">
-        <h2 className="text-sm font-semibold text-bnc-textPri mb-1">Karşılaştırılacak tarihler</h2>
-        <p className="text-xs text-bnc-textSec mb-3">Vurgulu günlerde snapshot vardır. İki tarih seçerek karşılaştırın.</p>
+      {/* Mobile tabs */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-bnc-surface border-t border-bnc-border flex">
+        {visibleTabs.map(tabItem => (
+          <button key={tabItem.id} onClick={() => setTab(tabItem.id)}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-[10px] ${
+              tab === tabItem.id ? 'text-bnc-accent' : 'text-bnc-textTer'
+            }`}>
+            <tabItem.icon className="w-4 h-4" />
+            {tabItem.label.split(' ')[0]}
+          </button>
+        ))}
+      </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-          <div>
-            <h3 className="text-xs font-medium text-bnc-textSec mb-1.5 flex items-center justify-between">
-              <span>Başlangıç</span>
-              {selectedSnapshot1 && <span className="text-[10px] text-bnc-accent">{formatDate(snapshots.find(s => s.id === selectedSnapshot1)?.snapshot_date)}</span>}
-            </h3>
-            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot1} onSelectSnapshot={setSelectedSnapshot1} />
-          </div>
-          <div>
-            <h3 className="text-xs font-medium text-bnc-textSec mb-1.5 flex items-center justify-between">
-              <span>Bitiş</span>
-              {selectedSnapshot2 && <span className="text-[10px] text-bnc-accent">{formatDate(snapshots.find(s => s.id === selectedSnapshot2)?.snapshot_date)}</span>}
-            </h3>
-            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot2} onSelectSnapshot={setSelectedSnapshot2} />
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        {/* Language toggle */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-xs text-bnc-textSec font-medium">{t('settings.language')}</span>
+          <div className="flex rounded-lg overflow-hidden border border-bnc-border">
+            <button
+              type="button"
+              onClick={() => setLanguage('tr')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${language === 'tr' ? 'bg-bnc-accent text-bnc-bg' : 'bg-bnc-surfaceAlt text-bnc-textSec hover:bg-bnc-border'}`}
+            >
+              {t('settings.language.tr')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setLanguage('en')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${language === 'en' ? 'bg-bnc-accent text-bnc-bg' : 'bg-bnc-surfaceAlt text-bnc-textSec hover:bg-bnc-border'}`}
+            >
+              {t('settings.language.en')}
+            </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => { if (snapshots.length >= 2) { setSelectedSnapshot1(snapshots[0].id); setSelectedSnapshot2(snapshots[snapshots.length - 1].id); } }}
-            className="bnc-btn-secondary px-2.5 py-1 text-xs"
-          >
-            En eski — en yeni
-          </button>
-          {snapshots.length >= 2 && (
-            <button
-              onClick={() => { setSelectedSnapshot1(snapshots[snapshots.length - 2].id); setSelectedSnapshot2(snapshots[snapshots.length - 1].id); }}
-              className="px-2.5 py-1 text-xs bg-bnc-surfaceAlt border border-bnc-border rounded-lg text-bnc-green font-medium hover:bg-bnc-border"
-            >
-              Son iki snapshot
+        {/* Header bar */}
+        <div className="flex items-center gap-2 mb-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-bnc-textTer" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('common.search')}
+              className="bnc-input pl-8 pr-7 py-1.5 text-xs w-full max-w-xs" />
+            {search && <button type="button" onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-bnc-textTer hover:text-bnc-textPri"><X className="w-3.5 h-3.5" /></button>}
+          </div>
+          {tab !== 'snapshots' && tab !== 'users' && tab !== 'model-portfolio' && (
+            <button type="button" onClick={() => startAdd(tab === 'instruments' ? { currency: 'TRY', market: 'BIST', asset_type: 'stock' } : {})}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bnc-accent text-bnc-bg text-xs font-medium hover:bg-bnc-accentHover transition-colors">
+              <Plus className="w-3.5 h-3.5" /> {t('common.add')}
             </button>
           )}
         </div>
-      </div>
 
-      {comparison && (
-        <>
-          <div className="bnc-card p-4 mb-4 border-t-2 border-t-bnc-accent">
-            <h2 className="text-sm font-semibold text-bnc-textPri mb-3">Portföy özeti</h2>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div>
-                <p className="text-bnc-textSec text-xs mb-0.5">Başlangıç değeri</p>
-                <p className="text-xl font-bold text-bnc-textPri">{formatCurrency(comparison.snapshot1.total_value)}</p>
-                <p className="text-bnc-textTer text-[10px] mt-0.5">{formatDate(comparison.snapshot1.date)}</p>
-              </div>
-              <div>
-                <p className="text-bnc-textSec text-xs mb-0.5">Güncel değer</p>
-                <p className="text-xl font-bold text-bnc-textPri">{formatCurrency(comparison.snapshot2.total_value)}</p>
-                <p className="text-bnc-textTer text-[10px] mt-0.5">{formatDate(comparison.snapshot2.date)}</p>
-              </div>
-              <div>
-                <p className="text-bnc-textSec text-xs mb-0.5">Toplam yatırım</p>
-                <p className="text-xl font-bold text-bnc-textPri">{formatCurrency(comparison.snapshot2.total_cost)}</p>
-              </div>
-              <div>
-                <p className="text-bnc-textSec text-xs mb-0.5">Değer değişimi</p>
-                <p className={`text-xl font-bold ${comparison.portfolio_change.value_change >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                  {comparison.portfolio_change.value_change >= 0 ? '+' : ''}
-                  {comparison.portfolio_change.value_change_pct.toFixed(2)}%
-                </p>
-                <p className="text-bnc-textTer text-[10px] mt-0.5">
-                  {comparison.portfolio_change.value_change >= 0 ? '+' : ''}{formatCurrency(comparison.portfolio_change.value_change)}
-                </p>
-              </div>
-            </div>
+        {loading ? (
+          <div className="flex justify-center py-20">
+            <div className="animate-spin rounded-full h-8 w-8 border-2 border-bnc-border border-t-bnc-accent" />
           </div>
+        ) : (
+          <div className="bnc-card overflow-hidden">
 
-          <div className="bnc-card p-4 mb-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
-              <h2 className="text-sm font-semibold text-bnc-textPri">Performans grafiği</h2>
-              <select
-                value={selectedInstrument}
-                onChange={(e) => setSelectedInstrument(e.target.value)}
-                className="bnc-input min-w-[180px]"
-              >
-                <option value="ALL">Tüm portföy</option>
-                {comparison.instruments.map(inst => (
-                  <option key={inst.instrument_id} value={inst.instrument_id}>{inst.symbol} - {inst.name}</option>
+            {/* ===== INSTRUMENTS ===== */}
+            {tab === 'instruments' && (<>
+              {showForm && (
+                <FormRow>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                    <input value={formData.symbol || ''} onChange={e => setFormData(p => ({ ...p, symbol: e.target.value }))} placeholder={t('settings.instruments.column.symbol')} className="bnc-input text-xs py-1.5" />
+                    <input value={formData.asset_type || ''} onChange={e => setFormData(p => ({ ...p, asset_type: e.target.value }))} placeholder={t('settings.instruments.column.type')} className="bnc-input text-xs py-1.5" />
+                    <input value={formData.market || ''} onChange={e => setFormData(p => ({ ...p, market: e.target.value }))} placeholder={t('settings.instruments.column.market')} className="bnc-input text-xs py-1.5" />
+                    <input value={formData.currency || ''} onChange={e => setFormData(p => ({ ...p, currency: e.target.value }))} placeholder={t('txForm.label.currency')} className="bnc-input text-xs py-1.5" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => save('instruments', createInstrument, updateInstrument)} className="px-3 py-1.5 rounded bg-bnc-accent text-bnc-bg text-xs font-medium"><Check className="w-3 h-3 inline mr-1" />{t('common.save')}</button>
+                    <button type="button" onClick={cancelForm} className="px-3 py-1.5 rounded bg-bnc-surfaceAlt text-bnc-textSec text-xs border border-bnc-border">{t('common.cancel')}</button>
+                  </div>
+                </FormRow>
+              )}
+              {/* Table header */}
+              <div className="hidden md:grid grid-cols-[1fr_80px_80px_80px_100px_120px_100px] gap-2 px-4 py-2 bg-bnc-surfaceAlt text-[10px] text-bnc-textTer font-medium uppercase tracking-wide">
+                <span>{t('settings.instruments.column.symbol')}</span><span>{t('settings.instruments.column.type')}</span><span>{t('settings.instruments.column.market')}</span><span>{t('settings.instruments.column.unit')}</span><span>{t('settings.instruments.column.lastPrice')}</span><span>{t('settings.instruments.column.lastUpdated')}</span><span className="text-right">{t('settings.instruments.column.actions')}</span>
+              </div>
+              <div className="divide-y divide-bnc-border max-h-[calc(100vh-240px)] overflow-y-auto">
+                {filteredInstruments.length === 0 ? (
+                  <p className="text-center text-bnc-textTer text-xs py-10">{t('settings.instruments.empty')}</p>
+                ) : filteredInstruments.map(i => (
+                  <div key={i.id} className="group">
+                    <div className="md:grid grid-cols-[1fr_80px_80px_80px_100px_120px_100px] gap-2 px-4 py-2.5 items-center hover:bg-bnc-surfaceAlt/30 transition-colors">
+                      <span className="text-xs font-bold text-bnc-textPri">{i.symbol}</span>
+                      <span className="hidden md:block text-[10px] text-bnc-textTer">{i.asset_type}</span>
+                      <span className="hidden md:block">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-bnc-surfaceAlt text-bnc-textTer">{i.market}</span>
+                      </span>
+                      <span className="hidden md:block text-[10px] text-bnc-textTer">{i.currency}</span>
+                      <span className="hidden md:block text-xs font-semibold text-bnc-textPri">
+                        {i.last_price_try != null ? `${fmt(i.last_price_try)} ₺` : <span className="text-bnc-textTer font-normal">-</span>}
+                      </span>
+                      <span className="hidden md:flex items-center gap-1 text-[10px] text-bnc-textTer">
+                        {i.last_price_updated_at ? (
+                          <><Clock className="w-3 h-3" />{new Date(i.last_price_updated_at).toLocaleDateString(locale, { day: '2-digit', month: 'short' })}</>
+                        ) : '-'}
+                      </span>
+                      <div className="hidden md:flex items-center justify-end gap-1">
+                        <button type="button" onClick={() => handleRefreshPrice(i.id)} disabled={refreshingId === i.id}
+                          className="p-1.5 text-bnc-textTer hover:text-bnc-accent disabled:opacity-40" title={t('settings.instruments.fetchPrice')}>
+                          <RefreshCw className={`w-3.5 h-3.5 ${refreshingId === i.id ? 'animate-spin' : ''}`} />
+                        </button>
+                        <button type="button" onClick={() => { setManualPriceId(manualPriceId === i.id ? null : i.id); setManualPriceVal(''); }}
+                          className="p-1.5 text-bnc-textTer hover:text-bnc-accent" title={t('settings.instruments.manualPrice')}>
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button type="button" onClick={() => startEdit(i)} className="p-1.5 text-bnc-textTer hover:text-bnc-accent" title={t('common.edit')}>
+                          <Package className="w-3.5 h-3.5" />
+                        </button>
+                        <button type="button" onClick={() => del('instruments', deleteInstrument, i.id, 'settings.instruments.deleteLabel')} className="p-1.5 text-bnc-textTer hover:text-bnc-red" title={t('common.delete')}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {/* Mobile meta */}
+                      <div className="md:hidden flex items-center gap-2 mt-1 text-[10px] text-bnc-textTer">
+                        <span>{i.market} · {i.currency} · {i.asset_type}</span>
+                        <div className="flex-1" />
+                        {i.last_price_try != null && <span className="font-semibold text-bnc-textPri">{fmt(i.last_price_try)} ₺</span>}
+                        <button type="button" onClick={() => handleRefreshPrice(i.id)} className="p-1 text-bnc-textTer hover:text-bnc-accent">
+                          <RefreshCw className={`w-3 h-3 ${refreshingId === i.id ? 'animate-spin' : ''}`} />
+                        </button>
+                        <button type="button" onClick={() => del('instruments', deleteInstrument, i.id, 'settings.instruments.deleteLabel')} className="p-1 text-bnc-textTer hover:text-bnc-red"><Trash2 className="w-3 h-3" /></button>
+                      </div>
+                    </div>
+                    {manualPriceId === i.id && (
+                      <div className="flex items-center gap-2 px-4 py-2 bg-bnc-surfaceAlt/20 border-t border-bnc-border">
+                        <span className="text-[10px] text-bnc-textTer">{t('settings.instruments.manualPriceLabel')}</span>
+                        <input type="number" step="any" value={manualPriceVal} onChange={e => setManualPriceVal(e.target.value)}
+                          placeholder={t('settings.instruments.manualPricePlaceholder')} className="bnc-input text-xs py-1 w-32" autoFocus
+                          onKeyDown={e => e.key === 'Enter' && handleManualPrice(i.id)} />
+                        <button type="button" onClick={() => handleManualPrice(i.id)} className="px-2 py-1 rounded bg-bnc-accent text-bnc-bg text-[10px] font-medium">{t('common.save')}</button>
+                        <button type="button" onClick={() => { setManualPriceId(null); setManualPriceVal(''); }} className="text-bnc-textTer hover:text-bnc-textPri"><X className="w-3.5 h-3.5" /></button>
+                      </div>
+                    )}
+                  </div>
                 ))}
-              </select>
-            </div>
+              </div>
+            </>)}
 
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={prepareChartData()} margin={{ top: 5, right: 24, left: 8, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2B3139" />
-                <XAxis dataKey="date" stroke="#848E9C" style={{ fontSize: '11px' }} />
-                <YAxis stroke="#848E9C" style={{ fontSize: '10px' }} tickFormatter={(v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M ₺` : v >= 1000 ? `${(v / 1000).toFixed(0)}K ₺` : `${v.toFixed(0)} ₺`} />
-                <Tooltip contentStyle={{ backgroundColor: '#1E2329', border: '1px solid #2B3139', borderRadius: '8px', color: '#EAECEF' }} formatter={(value, name) => [formatCurrency(value), name]} />
-                <Legend wrapperStyle={{ fontSize: '12px', color: '#B7BDC6' }} />
-                <Line type="monotone" dataKey="value" stroke="#F0B90B" strokeWidth={2} dot={{ fill: '#F0B90B', r: 4 }} name={selectedInstrument === 'ALL' ? 'Portföy değeri' : 'Enstrüman değeri'} />
-                {selectedInstrument === 'ALL' && (
-                  <Line type="monotone" dataKey="investment" stroke="#0ECB81" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#0ECB81', r: 3 }} name="Toplam yatırım" />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
+            {/* ===== ACCOUNTS ===== */}
+            {tab === 'accounts' && (<>
+              {showForm && (
+                <FormRow>
+                  <div className="flex gap-2 mb-2">
+                    <input value={formData.name || ''} onChange={e => setFormData(p => ({ ...p, name: e.target.value }))} placeholder={t('settings.accounts.placeholder.name')} className="bnc-input text-xs py-1.5 flex-1" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => save('accounts', createAccount, updateAccount)} className="px-3 py-1.5 rounded bg-bnc-accent text-bnc-bg text-xs font-medium"><Check className="w-3 h-3 inline mr-1" />{t('common.save')}</button>
+                    <button type="button" onClick={cancelForm} className="px-3 py-1.5 rounded bg-bnc-surfaceAlt text-bnc-textSec text-xs border border-bnc-border">{t('common.cancel')}</button>
+                  </div>
+                </FormRow>
+              )}
+              <div className="divide-y divide-bnc-border">
+                {filteredAccounts.length === 0 ? (
+                  <p className="text-center text-bnc-textTer text-xs py-10">{t('settings.accounts.empty')}</p>
+                ) : filteredAccounts.map(a => (
+                  <div key={a.id} className="flex items-center px-4 py-2.5 hover:bg-bnc-surfaceAlt/30">
+                    <p className="text-xs font-semibold text-bnc-textPri flex-1">{a.name}</p>
+                    <button type="button" onClick={() => startEdit(a)} className="p-1.5 text-bnc-textTer hover:text-bnc-accent"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button type="button" onClick={() => del('accounts', deleteAccount, a.id, 'settings.accounts.deleteLabel')} className="p-1.5 text-bnc-textTer hover:text-bnc-red"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                ))}
+              </div>
+            </>)}
 
-            {selectedInstrument !== 'ALL' && (() => {
-              const inst = comparison.instruments.find(i => i.instrument_id === parseInt(selectedInstrument));
-              if (!inst) return null;
-              const qtyChange = inst.current_quantity - inst.previous_quantity;
-              return (
-                <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-                  <div className="bg-bnc-surfaceAlt border border-bnc-border rounded-lg p-2.5">
-                    <p className="text-xs font-medium text-bnc-textSec mb-1">Fiyat değişimi</p>
-                    <p className={`text-base font-bold ${inst.price_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                      {inst.price_change_pct >= 0 ? '+' : ''}{inst.price_change_pct.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-bnc-textTer">{formatCurrency(inst.previous_price)} → {formatCurrency(inst.current_price)}</p>
-                  </div>
-                  <div className="bg-bnc-surfaceAlt border border-bnc-border rounded-lg p-2.5">
-                    <p className="text-xs font-medium text-bnc-textSec mb-1">Değer değişimi</p>
-                    <p className={`text-base font-bold ${inst.value_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                      {inst.value_change_pct >= 0 ? '+' : ''}{inst.value_change_pct.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-bnc-textTer">{formatCurrency(inst.previous_value)} → {formatCurrency(inst.current_value)}</p>
-                  </div>
-                  <div className="bg-bnc-surfaceAlt border border-bnc-border rounded-lg p-2.5">
-                    <p className="text-xs font-medium text-bnc-textSec mb-1">Adet değişimi</p>
-                    <p className={`text-base font-bold ${qtyChange >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                      {qtyChange >= 0 ? '+' : ''}{qtyChange.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-bnc-textTer">{inst.previous_quantity.toFixed(2)} → {inst.current_quantity.toFixed(2)}</p>
-                  </div>
-                  <div className="bg-bnc-surfaceAlt border border-bnc-border rounded-lg p-2.5">
-                    <p className="text-xs font-medium text-bnc-textSec mb-1">Ort. maliyet</p>
-                    <p className="text-base font-bold text-bnc-textPri">{formatCurrency(inst.current_avg_cost || 0)}</p>
-                    <p className="text-xs text-bnc-textTer">Önceki: {formatCurrency(inst.previous_avg_cost || 0)}</p>
+            {/* ===== SNAPSHOTS ===== */}
+            {tab === 'snapshots' && (
+              <div className="divide-y divide-bnc-border max-h-[calc(100vh-240px)] overflow-y-auto">
+                <div className="hidden md:grid grid-cols-[1fr_120px_120px_100px_80px_60px_50px] gap-2 px-4 py-2 bg-bnc-surfaceAlt text-[10px] text-bnc-textTer font-medium uppercase tracking-wide">
+                  <span>{t('settings.snapshots.column.date')}</span><span className="text-right">{t('settings.snapshots.column.marketValue')}</span><span className="text-right">{t('settings.snapshots.column.cost')}</span><span className="text-right">{t('settings.snapshots.column.plTry')}</span><span className="text-right">{t('settings.snapshots.column.plPct')}</span><span className="text-right">{t('settings.snapshots.column.positions')}</span><span></span>
+                </div>
+                {filteredSnapshots.length === 0 ? (
+                  <p className="text-center text-bnc-textTer text-xs py-10">{t('settings.snapshots.empty')}</p>
+                ) : filteredSnapshots.map(s => {
+                  const plPct = s.total_profit_loss_pct;
+                  const plVal = s.total_profit_loss;
+                  const hasData = plPct != null;
+                  const isPositive = hasData && plPct >= 0;
+                  return (
+                    <div key={s.id} className="md:grid grid-cols-[1fr_120px_120px_100px_80px_60px_50px] gap-2 px-4 py-2.5 items-center hover:bg-bnc-surfaceAlt/30">
+                      <span className="text-xs font-semibold text-bnc-textPri">{fmtDate(s.snapshot_date)}</span>
+                      <span className="hidden md:block text-xs text-right text-bnc-textSec">{fmt(s.total_market_value || 0)} ₺</span>
+                      <span className="hidden md:block text-xs text-right text-bnc-textTer">{fmt(s.total_cost_basis || 0)} ₺</span>
+                      <span className={`hidden md:block text-xs text-right font-medium ${hasData ? (isPositive ? 'text-bnc-green' : 'text-bnc-red') : 'text-bnc-textTer'}`}>
+                        {hasData ? `${isPositive ? '+' : ''}${fmt(plVal)}` : '-'}
+                      </span>
+                      <span className={`hidden md:block text-xs text-right font-semibold ${hasData ? (isPositive ? 'text-bnc-green' : 'text-bnc-red') : 'text-bnc-textTer'}`}>
+                        {hasData ? `${isPositive ? '+' : ''}${plPct.toFixed(2)}%` : '-'}
+                      </span>
+                      <span className="hidden md:block text-[10px] text-right text-bnc-textTer">{s.position_count ?? '-'}</span>
+                      <div className="hidden md:flex justify-end">
+                        <button type="button" onClick={() => del('snapshots', deleteSnapshot, s.id, 'settings.snapshots.deleteLabel')} className="p-1.5 text-bnc-textTer hover:text-bnc-red"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                      {/* Mobile */}
+                      <div className="md:hidden flex items-center gap-2 mt-1 text-[10px] text-bnc-textTer">
+                        <span>{t('settings.snapshots.mobile.value')} {fmt(s.total_market_value || 0)} ₺</span>
+                        {hasData && <span className={isPositive ? 'text-bnc-green' : 'text-bnc-red'}>{isPositive ? '+' : ''}{plPct.toFixed(2)}%</span>}
+                        {hasData && <span className={isPositive ? 'text-bnc-green' : 'text-bnc-red'}>({isPositive ? '+' : ''}{fmt(plVal)} ₺)</span>}
+                        <div className="flex-1" />
+                        <button type="button" onClick={() => del('snapshots', deleteSnapshot, s.id, 'settings.snapshots.deleteLabel')} className="p-1 text-bnc-textTer hover:text-bnc-red"><Trash2 className="w-3 h-3" /></button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ===== MODEL PORTFOLIO ===== */}
+            {tab === 'model-portfolio' && (
+              <div className="p-4">
+                <p className="text-xs text-bnc-textTer mb-4">
+                  {t('settings.modelPortfolio.description')}
+                </p>
+                <div className="space-y-2 mb-4">
+                  {modelTargets.map((row, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        value={row.tag_name}
+                        onChange={e => setModelTargets(prev => prev.map((item, idx) => idx === i ? { ...item, tag_name: e.target.value } : item))}
+                        placeholder={t('settings.modelPortfolio.placeholder.tagName')}
+                        className="bnc-input text-xs py-1.5 flex-1"
+                      />
+                      <div className="relative w-24">
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          max="100"
+                          value={row.target_percentage}
+                          onChange={e => setModelTargets(prev => prev.map((item, idx) => idx === i ? { ...item, target_percentage: parseFloat(e.target.value) || 0 } : item))}
+                          className="bnc-input text-xs py-1.5 w-full pr-6 text-right"
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-bnc-textTer">%</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setModelTargets(prev => prev.filter((_, idx) => idx !== i))}
+                        className="p-1.5 text-bnc-textTer hover:text-bnc-red"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setModelTargets(prev => [...prev, { tag_name: '', target_percentage: 0 }])}
+                    className="flex items-center gap-1.5 text-xs text-bnc-accent hover:text-bnc-accentHover font-medium"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> {t('settings.modelPortfolio.addTarget')}
+                  </button>
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs font-medium ${
+                      Math.abs(modelTargets.reduce((s, row) => s + (row.target_percentage || 0), 0) - 100) < 0.1
+                        ? 'text-bnc-green' : 'text-bnc-red'
+                    }`}>
+                      {t('settings.modelPortfolio.totalPercent', { n: modelTargets.reduce((s, row) => s + (row.target_percentage || 0), 0).toFixed(1) })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const total = modelTargets.reduce((s, row) => s + (row.target_percentage || 0), 0);
+                        if (Math.abs(total - 100) > 0.5) {
+                          showError(t('settings.modelPortfolio.error.mustBe100', { n: total.toFixed(1) }));
+                          return;
+                        }
+                        const valid = modelTargets.filter(row => row.tag_name.trim());
+                        if (valid.length === 0) { showError(t('settings.modelPortfolio.error.atLeastOne')); return; }
+                        setModelSaving(true);
+                        try {
+                          const res = await updateModelPortfolio(valid);
+                          setModelTargets(res.data || valid);
+                          showSuccess(t('settings.modelPortfolio.saved'));
+                        } catch (e) { showError(e.response?.data?.detail || t('settings.modelPortfolio.saveError')); }
+                        finally { setModelSaving(false); }
+                      }}
+                      disabled={modelSaving}
+                      className="px-3 py-1.5 rounded bg-bnc-accent text-bnc-bg text-xs font-medium hover:bg-bnc-accentHover disabled:opacity-50 transition-colors"
+                    >
+                      {modelSaving ? t('common.saving') : t('common.save')}
+                    </button>
                   </div>
                 </div>
-              );
-            })()}
-          </div>
+              </div>
+            )}
 
-          <div className="bnc-card overflow-hidden p-0">
-            <div className="px-4 py-3 border-b border-bnc-border">
-              <h2 className="text-sm font-semibold text-bnc-textPri">Enstrüman bazlı performans</h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-bnc-border">
-                <thead className="bg-bnc-surfaceAlt">
-                  <tr>
-                    <SortHeader field="symbol" label="Enstrüman" align="left" />
-                    <SortHeader field="previous_price" label="Önceki fiyat" />
-                    <SortHeader field="current_price" label="Güncel fiyat" />
-                    <SortHeader field="price_change_pct" label="Fiyat değişimi" />
-                    <SortHeader field="previous_value" label="Önceki değer" />
-                    <SortHeader field="current_value" label="Güncel değer" />
-                    <SortHeader field="value_change_pct" label="Değer değişimi" />
-                    <SortHeader field="quantity_change" label="Miktar değişimi" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-bnc-border bg-bnc-surface">
-                  {getSortedInstruments().map((inst) => {
-                    const qtyChange = inst.current_quantity - inst.previous_quantity;
-                    return (
-                      <tr key={inst.instrument_id} className="hover:bg-bnc-surfaceAlt/80">
-                        <td className="px-4 py-2.5 whitespace-nowrap">
-                          <div className="text-sm font-medium text-bnc-textPri">{inst.symbol}</div>
-                          <div className="text-xs text-bnc-textTer">{inst.name}</div>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm text-bnc-textPri">{formatCurrency(inst.previous_price)}</td>
-                        <td className="px-4 py-2.5 text-right text-sm text-bnc-textPri">{formatCurrency(inst.current_price)}</td>
-                        <td className="px-4 py-2.5 text-right">
-                          <span className={`inline-flex items-center text-sm font-medium ${inst.price_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                            {inst.price_change_pct >= 0 ? <TrendingUp className="w-3.5 h-3.5 mr-1" /> : <TrendingDown className="w-3.5 h-3.5 mr-1" />}
-                            {inst.price_change_pct >= 0 ? '+' : ''}{inst.price_change_pct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm text-bnc-textPri">{formatCurrency(inst.previous_value)}</td>
-                        <td className="px-4 py-2.5 text-right text-sm text-bnc-textPri">{formatCurrency(inst.current_value)}</td>
-                        <td className="px-4 py-2.5 text-right">
-                          <span className={`inline-flex items-center text-sm font-medium ${inst.value_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                            {inst.value_change_pct >= 0 ? <TrendingUp className="w-3.5 h-3.5 mr-1" /> : <TrendingDown className="w-3.5 h-3.5 mr-1" />}
-                            {inst.value_change_pct >= 0 ? '+' : ''}{inst.value_change_pct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm">
-                          <div className={`font-medium ${qtyChange > 0 ? 'text-bnc-green' : qtyChange < 0 ? 'text-bnc-red' : 'text-bnc-textTer'}`}>
-                            {qtyChange > 0 ? '+' : ''}{qtyChange.toFixed(2)}
-                          </div>
-                          <div className="text-xs text-bnc-textTer">{inst.previous_quantity.toFixed(2)} → {inst.current_quantity.toFixed(2)}</div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            {/* ===== USERS ===== */}
+            {tab === 'users' && user?.is_admin && (<>
+              {showForm && (
+                <FormRow>
+                  <p className="text-[10px] text-bnc-textTer mb-2">
+                    {editingItem ? t('settings.users.editUserWithEmail', { email: editingItem.email }) : t('settings.users.editTitle')}
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2">
+                    <input value={formData.email || ''} onChange={e => setFormData(p => ({ ...p, email: e.target.value }))}
+                      placeholder={t('auth.register.email')} className="bnc-input text-xs py-1.5" />
+                    <input value={formData.username || ''} onChange={e => setFormData(p => ({ ...p, username: e.target.value }))}
+                      placeholder={t('settings.users.username')} className="bnc-input text-xs py-1.5" />
+                    <input value={formData.password || ''} onChange={e => setFormData(p => ({ ...p, password: e.target.value }))}
+                      placeholder={t('settings.users.newPassword')} type="password" className="bnc-input text-xs py-1.5" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={async () => {
+                      if (!editingItem) return;
+                      try {
+                        const payload = {};
+                        if (formData.email && formData.email !== editingItem.email) payload.email = formData.email;
+                        if (formData.username && formData.username !== editingItem.username) payload.username = formData.username;
+                        if (formData.password) payload.password = formData.password;
+                        if (Object.keys(payload).length === 0) { showError(t('settings.modelPortfolio.noChanges')); return; }
+                        await updateAdminUser(editingItem.id, payload);
+                        showSuccess(t('settings.users.updated'));
+                        if (editingItem.id === user?.id) refreshUser();
+                        cancelForm();
+                        load('users');
+                      } catch (e) { showError(e.response?.data?.detail || t('common.error')); }
+                    }} className="px-3 py-1.5 rounded bg-bnc-accent text-bnc-bg text-xs font-medium"><Check className="w-3 h-3 inline mr-1" />{t('common.save')}</button>
+                    <button type="button" onClick={cancelForm} className="px-3 py-1.5 rounded bg-bnc-surfaceAlt text-bnc-textSec text-xs border border-bnc-border">{t('common.cancel')}</button>
+                  </div>
+                </FormRow>
+              )}
+              <div className="divide-y divide-bnc-border">
+                {users.length === 0 ? (
+                  <p className="text-center text-bnc-textTer text-xs py-10">{t('settings.users.empty')}</p>
+                ) : users.map(uRow => (
+                  <div key={uRow.id} className="flex items-center px-4 py-2.5 gap-3 hover:bg-bnc-surfaceAlt/30">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-bnc-textPri">{uRow.email}</p>
+                      <p className="text-[10px] text-bnc-textTer">@{uRow.username} · ID: {uRow.id} · {fmtDate(uRow.created_at)}</p>
+                    </div>
+                    <div className="w-12 text-center shrink-0">
+                      {uRow.is_admin && <span className="text-[10px] px-1.5 py-0.5 rounded bg-bnc-accent/15 text-bnc-accent font-medium">{t('settings.users.badgeAdmin')}</span>}
+                    </div>
+                    <button type="button" onClick={() => { toggleUserAdmin(uRow.id).then(() => { showSuccess(t('settings.toast.updated')); load('users'); }).catch(() => showError(t('common.error'))); }}
+                      className="w-24 px-2.5 py-1 text-[10px] text-center rounded bg-bnc-surfaceAlt text-bnc-textSec hover:text-bnc-textPri border border-bnc-border shrink-0">
+                      {uRow.is_admin ? t('settings.users.revokeAdmin') : t('settings.users.makeAdmin')}
+                    </button>
+                    <div className="flex items-center gap-0.5 w-14 shrink-0">
+                      <button type="button" onClick={() => startEdit(uRow)} className="p-1.5 text-bnc-textTer hover:text-bnc-accent" title={t('common.edit')}><Pencil className="w-3.5 h-3.5" /></button>
+                      {uRow.id !== user.id ? (
+                        <button type="button" onClick={() => del('users', deleteAdminUser, uRow.id, 'settings.users.deleteLabel')} className="p-1.5 text-bnc-textTer hover:text-bnc-red"><Trash2 className="w-3.5 h-3.5" /></button>
+                      ) : <div className="w-7" />}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>)}
+
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   );
 }
-
-export default PerformanceAnalysisPage;

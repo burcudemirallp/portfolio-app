@@ -11,6 +11,10 @@
 }
 
 @layer base {
+  .min-h-screen {
+    min-height: 100dvh !important;
+  }
+
   .dark {
     color-scheme: dark;
   }

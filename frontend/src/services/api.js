@@ -1,19 +1,18 @@
 import axios from 'axios';
-import { getItem, setItem, removeItem, KEYS } from '../utils/storage';
 
-// Simulator uses localhost, physical device needs actual IP
-const API_BASE_URL = 'http://192.168.1.147:8000';
+// Vite proxy: /api -> backend (127.0.0.1:8000), aynı origin = network hatası önlenir
+const API_BASE_URL = '/api';
+
+// Pending kalmasın: sunucu yanıt vermezse timeout ile hata döner
 const REQUEST_TIMEOUT_MS = 20000;
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: REQUEST_TIMEOUT_MS,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
-
-// Auth logout callback — set by AuthContext
-let onAuthLogout = null;
-export const setOnAuthLogout = (cb) => { onAuthLogout = cb; };
 
 export const setAuthToken = (token) => {
   if (token) {
@@ -25,12 +24,14 @@ export const setAuthToken = (token) => {
 
 api.interceptors.response.use(
   (res) => res,
-  async (err) => {
+  (err) => {
     if (err.response?.status === 401) {
       setAuthToken(null);
-      await removeItem(KEYS.TOKEN);
-      await removeItem(KEYS.USER);
-      if (onAuthLogout) onAuthLogout();
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('portfolio_token');
+        localStorage.removeItem('portfolio_user');
+        window.dispatchEvent(new Event('auth-logout'));
+      }
     }
     return Promise.reject(err);
   }
@@ -66,18 +67,13 @@ export const deleteTransaction = (id) => api.delete(`/transactions/${id}`);
 export const updateCashFlowNote = (id, note) => api.patch(`/transactions/${id}/cash-flow-note`, { note });
 export const updateCashFlowAmount = (id, amount) => api.patch(`/transactions/${id}/cash-flow-amount`, { amount });
 
-// Cash Flows (TWR)
+// Cash Flows (TWR için bağımsız)
 export const getCashFlows = () => api.get('/cash-flows');
 export const createCashFlow = (data) => api.post('/cash-flows', data);
 export const updateCashFlow = (id, data) => api.put(`/cash-flows/${id}`, data);
 export const deleteCashFlow = (id) => api.delete(`/cash-flows/${id}`);
 export const getDebugTransactions = () => api.get('/debug/transactions');
 
-// Brokers
-export const getBrokers = () => api.get('/brokers');
-export const createBroker = (data) => api.post('/brokers', data);
-export const updateBroker = (id, data) => api.put(`/brokers/${id}`, data);
-export const deleteBroker = (id) => api.delete(`/brokers/${id}`);
 
 // Accounts
 export const getAccounts = () => api.get('/accounts');
@@ -89,7 +85,7 @@ export const deleteAccount = (id) => api.delete(`/accounts/${id}`);
 export const createPortfolioSnapshot = () => api.post('/portfolio/snapshot');
 export const getPortfolioPerformance = (period) => api.get(`/portfolio/performance/${period}`);
 export const getPortfolioTWR = () => api.get('/portfolio/twr');
-export const getTWRComparison = () => api.get('/portfolio/twr/comparison');
+export const getTWRComparison = () => api.get('/portfolio/twr/comparison', { timeout: 60000 });
 export const getPortfolioSnapshots = (limit = 30) => api.get(`/portfolio/snapshots?limit=${limit}`);
 export const getSnapshotDetail = (snapshotId) => api.get(`/portfolio/snapshot/${snapshotId}`);
 export const compareSnapshots = (snapshotId1, snapshotId2) => api.get(`/portfolio/compare/${snapshotId1}/${snapshotId2}`);
@@ -100,7 +96,6 @@ export const deleteAllSnapshots = () => api.delete('/portfolio/snapshots/all');
 // Sale Records
 export const getSaleRecords = () => api.get('/sales');
 export const createSaleRecord = (data) => api.post('/sales', data);
-export const deleteSaleRecord = (id) => api.delete(`/sales/${id}`);
 
 // Price Alerts
 export const getAlerts = () => api.get('/alerts');
@@ -112,15 +107,28 @@ export const toggleAlert = (id) => api.patch(`/alerts/${id}/toggle`);
 // Scheduler
 export const getSchedulerStatus = () => api.get('/scheduler/status');
 
-// Scanner
+// Scanner (Tarama)
 export const getBistSymbols = () => api.get('/scanner/bist-symbols');
 export const runBistEmaScan = (body = {}) => api.post('/scanner/bist-ema', body);
+export const deleteSaleRecord = (id) => api.delete(`/sales/${id}`);
 
-// Admin
+// Admin - Kullanıcı yönetimi (sadece admin)
 export const getAdminUsers = () => api.get('/admin/users');
+export const updateAdminUser = (userId, data) => api.put(`/admin/users/${userId}`, data);
 export const deleteAdminUser = (userId) => api.delete(`/admin/users/${userId}`);
 export const toggleUserAdmin = (userId) => api.patch(`/admin/users/${userId}/admin`);
 export const adminSwitchUser = (userId) => api.post('/admin/switch-user', { user_id: userId });
+
+export default api;
+
+
+// Insights
+export const getModelPortfolio = () => api.get('/insights/model-portfolio');
+export const updateModelPortfolio = (targets) => api.put('/insights/model-portfolio', targets);
+export const getInsightTodos = () => api.get('/insights/todos');
+export const createInsightTodo = (data) => api.post('/insights/todos', data);
+export const updateInsightTodo = (id, data) => api.put(`/insights/todos/${id}`, data);
+export const deleteInsightTodo = (id) => api.delete(`/insights/todos/${id}`);
 
 // Notifications
 export const getNotifications = (unreadOnly = false) => api.get(`/notifications?unread_only=${unreadOnly}`);
@@ -128,5 +136,3 @@ export const getUnreadCount = () => api.get('/notifications/unread-count');
 export const markNotificationRead = (id, isRead = true) => api.patch(`/notifications/${id}/read`, { is_read: isRead });
 export const markAllNotificationsRead = () => api.patch('/notifications/read-all');
 export const deleteNotification = (id) => api.delete(`/notifications/${id}`);
-
-export default api;

@@ -1,4 +1,10 @@
 import { Component } from 'react';
+import { translations } from '../i18n';
+
+function getT() {
+  const lang = (typeof localStorage !== 'undefined' && localStorage.getItem('app_language')) || 'tr';
+  return (key) => translations[lang]?.[key] ?? translations.tr?.[key] ?? key;
+}
 
 export class ErrorBoundary extends Component {
   state = { hasError: false, error: null };
@@ -13,10 +19,11 @@ export class ErrorBoundary extends Component {
 
   render() {
     if (this.state.hasError) {
+      const t = getT();
       return (
         <div className="min-h-screen bg-bnc-bg flex items-center justify-center p-4">
           <div className="bg-bnc-surface border border-bnc-border rounded-lg shadow-lg p-6 max-w-lg w-full">
-            <h1 className="text-xl font-bold text-bnc-red mb-2">Bir hata oluştu</h1>
+            <h1 className="text-xl font-bold text-bnc-red mb-2">{t('common.errorBoundary.title')}</h1>
             <pre className="text-sm text-bnc-textSec bg-bnc-surfaceAlt border border-bnc-border p-3 rounded overflow-auto max-h-48">
               {this.state.error?.message || String(this.state.error)}
             </pre>
@@ -24,7 +31,7 @@ export class ErrorBoundary extends Component {
               onClick={() => window.location.reload()}
               className="mt-4 px-4 py-2 bnc-btn-primary"
             >
-              Sayfayı yenile
+              {t('common.errorBoundary.reload')}
             </button>
           </div>
         </div>

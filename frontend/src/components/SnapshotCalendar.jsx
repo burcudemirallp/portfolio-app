@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
 
 function SnapshotCalendar({ snapshots, selectedSnapshot, onSelectSnapshot }) {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const { t, locale } = useLanguage();
 
   // Snapshot'ları tarihe göre grupla
   const snapshotsByDate = {};
@@ -36,15 +38,11 @@ function SnapshotCalendar({ snapshots, selectedSnapshot, onSelectSnapshot }) {
     setCurrentDate(new Date(year, month + 1, 1));
   };
 
-  const monthNames = [
-    'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-    'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'
-  ];
-
-  const dayNames = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+  const monthNames = t('calendar.months');
+  const dayNames = t('calendar.weekdays');
 
   const formatCurrency = (value) => {
-    return new Intl.NumberFormat('tr-TR', {
+    return new Intl.NumberFormat(locale, {
       style: 'currency',
       currency: 'TRY',
       minimumFractionDigits: 0,
@@ -110,7 +108,7 @@ function SnapshotCalendar({ snapshots, selectedSnapshot, onSelectSnapshot }) {
                   ? 'bg-bnc-accent/20 text-bnc-accent hover:bg-bnc-accent/30 cursor-pointer'
                   : 'text-bnc-textSec'
               } ${isToday ? 'ring-1 ring-bnc-accent' : ''}`}
-              title={hasSnapshots ? `${daySnapshots.length} snapshot - ${formatCurrency(daySnapshots[0].total_market_value)}` : ''}
+              title={hasSnapshots ? t('calendar.tooltip', { count: daySnapshots.length, amount: formatCurrency(daySnapshots[0].total_market_value) }) : ''}
             >
               {day}
               {hasSnapshots && daySnapshots.length > 1 && (

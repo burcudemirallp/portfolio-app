@@ -33,10 +33,11 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={{ showToast, showSuccess, showError, showInfo, showWarning }}>
       {children}
-      <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
+      <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm" aria-live="polite" aria-atomic="false">
         {toasts.map(toast => (
           <div
             key={toast.id}
+            role="status"
             onClick={() => dismiss(toast.id)}
             className={`px-4 py-3 rounded-lg shadow-lg cursor-pointer text-sm font-medium transition-all duration-300 animate-slide-in
               ${typeStyles[toast.type] || typeStyles.info}

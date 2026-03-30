@@ -1,46 +1,68 @@
-import { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, Calendar, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
-import { getPortfolioSnapshots, compareSnapshots, createPortfolioSnapshot } from '../services/api';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { TrendingUp, TrendingDown, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { getPortfolioSnapshots, compareSnapshots } from '../services/api';
 import SnapshotCalendar from './SnapshotCalendar';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useToast } from './Toast';
+import { useLanguage } from '../contexts/LanguageContext';
+
+function findClosestSnapshot(snapshots, targetDate) {
+  let closest = null;
+  let minDiff = Infinity;
+  for (const s of snapshots) {
+    const diff = Math.abs(new Date(s.snapshot_date) - targetDate);
+    if (diff < minDiff) { minDiff = diff; closest = s; }
+  }
+  return closest;
+}
 
 function PerformanceAnalysisPage() {
-  const { showSuccess, showError } = useToast();
+  const { t, locale } = useLanguage();
   const [snapshots, setSnapshots] = useState([]);
   const [selectedSnapshot1, setSelectedSnapshot1] = useState(null);
   const [selectedSnapshot2, setSelectedSnapshot2] = useState(null);
   const [comparison, setComparison] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [creatingSnapshot, setCreatingSnapshot] = useState(false);
+  const [activePreset, setActivePreset] = useState('all');
   const [selectedInstrument, setSelectedInstrument] = useState('ALL');
   const [sortField, setSortField] = useState('value_change_pct');
   const [sortDirection, setSortDirection] = useState('desc');
 
-  useEffect(() => {
-    loadSnapshots();
-  }, []);
+  const fmt = useCallback((v) =>
+    new Intl.NumberFormat(locale, { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(v),
+  [locale]);
 
-  const handleCreateSnapshot = async () => {
-    setCreatingSnapshot(true);
-    try {
-      const res = await createPortfolioSnapshot();
-      showSuccess(`Snapshot oluşturuldu! ${res.data.total_positions} pozisyon kaydedildi`);
-      await loadSnapshots();
-    } catch (err) {
-      showError('Snapshot oluşturulamadı: ' + (err.response?.data?.detail || err.message));
-    } finally {
-      setCreatingSnapshot(false);
-    }
-  };
+  const fmtFull = useCallback((v) =>
+    new Intl.NumberFormat(locale, { style: 'currency', currency: 'TRY', minimumFractionDigits: 2 }).format(v),
+  [locale]);
+
+  const fmtDate = useCallback((d) =>
+    new Date(d).toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' }),
+  [locale]);
+
+  const fmtShort = useCallback((d) =>
+    new Date(d).toLocaleDateString(locale, { day: '2-digit', month: 'short' }),
+  [locale]);
+
+  const PRESETS = useMemo(() => [
+    { key: 'last2', label: t('performance.presets.last2') },
+    { key: '1W', label: t('performance.presets.1w'), days: 7 },
+    { key: '1M', label: t('performance.presets.1m'), days: 30 },
+    { key: '3M', label: t('performance.presets.3m'), days: 90 },
+    { key: '1Y', label: '1Y', days: 365 },
+    { key: 'all', label: t('performance.presets.all') },
+  ], [t]);
+
+  useEffect(() => { loadSnapshots(); }, []);
 
   const loadSnapshots = async () => {
     try {
-      const res = await getPortfolioSnapshots(50);
-      setSnapshots(res.data);
-      if (res.data.length >= 2) {
-        setSelectedSnapshot1(res.data[0].id);
-        setSelectedSnapshot2(res.data[res.data.length - 1].id);
+      const res = await getPortfolioSnapshots(365);
+      const data = res.data || [];
+      setSnapshots(data);
+      if (data.length >= 2) {
+        setSelectedSnapshot1(data[0].id);
+        setSelectedSnapshot2(data[data.length - 1].id);
+        setActivePreset('all');
       }
     } catch (err) {
       console.error('Error loading snapshots:', err);
@@ -51,37 +73,54 @@ function PerformanceAnalysisPage() {
 
   useEffect(() => {
     if (selectedSnapshot1 && selectedSnapshot2 && selectedSnapshot1 !== selectedSnapshot2) {
-      loadComparison();
+      compareSnapshots(selectedSnapshot1, selectedSnapshot2)
+        .then(res => setComparison(res.data))
+        .catch(err => console.error('Error comparing:', err));
     }
   }, [selectedSnapshot1, selectedSnapshot2]);
 
-  const loadComparison = async () => {
-    try {
-      const res = await compareSnapshots(selectedSnapshot1, selectedSnapshot2);
-      setComparison(res.data);
-    } catch (err) {
-      console.error('Error comparing snapshots:', err);
+  const applyPreset = useCallback((key) => {
+    if (snapshots.length < 2) return;
+    const newest = snapshots[snapshots.length - 1];
+
+    if (key === 'last2') {
+      setSelectedSnapshot1(snapshots[snapshots.length - 2].id);
+      setSelectedSnapshot2(newest.id);
+    } else if (key === 'all') {
+      setSelectedSnapshot1(snapshots[0].id);
+      setSelectedSnapshot2(newest.id);
+    } else {
+      const preset = PRESETS.find(p => p.key === key);
+      if (!preset?.days) return;
+      const target = new Date(Date.now() - preset.days * 86400000);
+      const closest = findClosestSnapshot(snapshots, target);
+      if (closest && closest.id !== newest.id) {
+        setSelectedSnapshot1(closest.id);
+        setSelectedSnapshot2(newest.id);
+      }
     }
-  };
+    setActivePreset(key);
+  }, [snapshots, PRESETS]);
 
-  const formatCurrency = (value) =>
-    new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 2 }).format(value);
-
-  const formatDate = (dateString) =>
-    new Date(dateString).toLocaleDateString('tr-TR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const handleSelectSnapshot1 = (id) => { setSelectedSnapshot1(id); setActivePreset(null); };
+  const handleSelectSnapshot2 = (id) => { setSelectedSnapshot2(id); setActivePreset(null); };
 
   const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('desc');
-    }
+    if (sortField === field) setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortField(field); setSortDirection('desc'); }
   };
 
-  const getSortedInstruments = () => {
-    if (!comparison) return [];
-    return [...comparison.instruments].sort((a, b) => {
+  const { existingInstruments, newInstruments, soldInstruments } = useMemo(() => {
+    if (!comparison?.instruments) return { existingInstruments: [], newInstruments: [], soldInstruments: [] };
+    const existing = [];
+    const added = [];
+    const removed = [];
+    for (const inst of comparison.instruments) {
+      if (inst.status === 'new') added.push(inst);
+      else if (inst.status === 'sold') removed.push(inst);
+      else existing.push(inst);
+    }
+    existing.sort((a, b) => {
       let aVal, bVal;
       switch (sortField) {
         case 'symbol': aVal = a.symbol.toLowerCase(); bVal = b.symbol.toLowerCase(); break;
@@ -97,35 +136,38 @@ function PerformanceAnalysisPage() {
       if (typeof aVal === 'string') return sortDirection === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
       return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
     });
-  };
+    added.sort((a, b) => (b.current_value ?? 0) - (a.current_value ?? 0));
+    removed.sort((a, b) => (b.previous_value ?? 0) - (a.previous_value ?? 0));
+    return { existingInstruments: existing, newInstruments: added, soldInstruments: removed };
+  }, [comparison, sortField, sortDirection]);
 
-  const prepareChartData = () => {
+  const chartData = useMemo(() => {
     if (!comparison) return [];
     if (selectedInstrument === 'ALL') {
       return [
-        { date: new Date(comparison.snapshot1.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: comparison.snapshot1.total_value, investment: comparison.snapshot1.total_cost },
-        { date: new Date(comparison.snapshot2.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: comparison.snapshot2.total_value, investment: comparison.snapshot2.total_cost },
+        { date: fmtShort(comparison.snapshot1.date), value: comparison.snapshot1.total_value, investment: comparison.snapshot1.total_cost },
+        { date: fmtShort(comparison.snapshot2.date), value: comparison.snapshot2.total_value, investment: comparison.snapshot2.total_cost },
       ];
     }
     const inst = comparison.instruments.find(i => i.instrument_id === parseInt(selectedInstrument));
     if (!inst) return [];
     return [
-      { date: new Date(comparison.snapshot1.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: inst.previous_value },
-      { date: new Date(comparison.snapshot2.date).toLocaleDateString('tr-TR', { day: '2-digit', month: 'short' }), value: inst.current_value },
+      { date: fmtShort(comparison.snapshot1.date), value: inst.previous_value },
+      { date: fmtShort(comparison.snapshot2.date), value: inst.current_value },
     ];
-  };
+  }, [comparison, selectedInstrument, fmtShort]);
+
+  const snap1Info = snapshots.find(s => s.id === selectedSnapshot1);
+  const snap2Info = snapshots.find(s => s.id === selectedSnapshot2);
 
   const SortHeader = ({ field, label, align = 'right' }) => (
-    <th
-      onClick={() => handleSort(field)}
-      className={`px-4 py-3 text-xs font-medium text-gray-600 dark:text-gray-300 uppercase tracking-wider cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 ${align === 'left' ? 'text-left' : 'text-right'}`}
-    >
-      <div className={`flex items-center ${align === 'left' ? '' : 'justify-end'}`}>
+    <th onClick={() => handleSort(field)}
+      className={`px-3 py-2.5 text-[11px] font-medium text-bnc-textTer uppercase tracking-wider cursor-pointer hover:bg-bnc-surfaceAlt transition-colors ${align === 'left' ? 'text-left' : 'text-right'}`}>
+      <div className={`flex items-center gap-1 ${align === 'left' ? '' : 'justify-end'}`}>
         {label}
         {sortField === field
-          ? (sortDirection === 'asc' ? <ArrowUp className="w-3 h-3 ml-1" /> : <ArrowDown className="w-3 h-3 ml-1" />)
-          : <ArrowUpDown className="w-3 h-3 ml-1 opacity-30" />
-        }
+          ? (sortDirection === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)
+          : <ArrowUpDown className="w-3 h-3 opacity-30" />}
       </div>
     </th>
   );
@@ -133,235 +175,284 @@ function PerformanceAnalysisPage() {
   if (loading) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-bnc-accent" />
       </div>
     );
   }
 
   if (snapshots.length < 2) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center">
-          <Calendar className="w-16 h-16 mx-auto text-gray-400 mb-4" />
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Yeterli Snapshot Yok</h2>
-          <p className="text-gray-600 dark:text-gray-300 mb-4">Performans analizi için en az 2 snapshot gerekiyor. (Mevcut: {snapshots.length})</p>
-          <button
-            onClick={handleCreateSnapshot}
-            disabled={creatingSnapshot}
-            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-          >
-            {creatingSnapshot ? 'Oluşturuluyor...' : 'Snapshot Oluştur'}
-          </button>
+      <div className="flex items-center justify-center py-20">
+        <div className="text-center max-w-md">
+          <div className="w-14 h-14 mx-auto rounded-full bg-bnc-surfaceAlt flex items-center justify-center mb-4">
+            <TrendingUp className="w-7 h-7 text-bnc-textTer" />
+          </div>
+          <h2 className="text-lg font-semibold text-bnc-textPri mb-2">{t('performance.empty.title')}</h2>
+          <p className="text-bnc-textTer text-sm">{t('performance.empty.body', { count: String(snapshots.length) })}</p>
         </div>
       </div>
     );
   }
 
+  const change = comparison?.portfolio_change;
+  const isPositive = change?.value_change >= 0;
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">📊 Performans Analizi</h1>
-      </div>
-
-      {/* Snapshot Seçimi */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-6">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-white mb-2">📅 Karşılaştırılacak Tarihleri Seçin</h2>
-        <p className="text-xs text-gray-700 dark:text-gray-300 mb-3">Mavi işaretli günlerde snapshot var. İki tarih seçerek karşılaştırma yapın.</p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-          <div>
-            <h3 className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5 flex items-center justify-between">
-              <span>📍 Başlangıç</span>
-              {selectedSnapshot1 && <span className="text-[10px] text-blue-600 dark:text-blue-400">{formatDate(snapshots.find(s => s.id === selectedSnapshot1)?.snapshot_date)}</span>}
-            </h3>
-            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot1} onSelectSnapshot={setSelectedSnapshot1} />
-          </div>
-          <div>
-            <h3 className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1.5 flex items-center justify-between">
-              <span>🎯 Bitiş</span>
-              {selectedSnapshot2 && <span className="text-[10px] text-blue-600 dark:text-blue-400">{formatDate(snapshots.find(s => s.id === selectedSnapshot2)?.snapshot_date)}</span>}
-            </h3>
-            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot2} onSelectSnapshot={setSelectedSnapshot2} />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => { if (snapshots.length >= 2) { setSelectedSnapshot1(snapshots[0].id); setSelectedSnapshot2(snapshots[snapshots.length - 1].id); } }}
-            className="px-2.5 py-1 text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200 dark:hover:bg-blue-800"
-          >
-            ⏮️ En Eski ↔ En Yeni ⏭️
-          </button>
-          {snapshots.length >= 2 && (
-            <button
-              onClick={() => { setSelectedSnapshot1(snapshots[snapshots.length - 2].id); setSelectedSnapshot2(snapshots[snapshots.length - 1].id); }}
-              className="px-2.5 py-1 text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-800"
-            >
-              📊 Son İki Snapshot
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Karşılaştırma Sonuçları */}
+    <div className="max-w-7xl mx-auto space-y-5">
+      {/* Portfolio Performance Summary */}
       {comparison && (
-        <>
-          {/* Portföy Özeti */}
-          <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg shadow-lg p-4 mb-4 text-white">
-            <h2 className="text-base font-semibold mb-3">📊 Portföy Performansı</h2>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div>
-                <p className="text-blue-100 text-xs mb-0.5">Başlangıç Değeri</p>
-                <p className="text-2xl font-bold">{formatCurrency(comparison.snapshot1.total_value)}</p>
-                <p className="text-blue-100 text-[10px] mt-0.5">{formatDate(comparison.snapshot1.date)}</p>
-              </div>
-              <div>
-                <p className="text-blue-100 text-xs mb-0.5">Güncel Değer</p>
-                <p className="text-2xl font-bold">{formatCurrency(comparison.snapshot2.total_value)}</p>
-                <p className="text-blue-100 text-[10px] mt-0.5">{formatDate(comparison.snapshot2.date)}</p>
-              </div>
-              <div>
-                <p className="text-blue-100 text-xs mb-0.5">Toplam Yatırım</p>
-                <p className="text-2xl font-bold">{formatCurrency(comparison.snapshot2.total_cost)}</p>
-              </div>
-              <div>
-                <p className="text-blue-100 text-xs mb-0.5">Değer Değişimi</p>
-                <p className={`text-2xl font-bold ${comparison.portfolio_change.value_change >= 0 ? 'text-green-300' : 'text-red-300'}`}>
-                  {comparison.portfolio_change.value_change >= 0 ? '📈 +' : '📉 '}
-                  {comparison.portfolio_change.value_change_pct.toFixed(2)}%
-                </p>
-                <p className="text-blue-100 text-[10px] mt-0.5">
-                  {comparison.portfolio_change.value_change >= 0 ? '+' : ''}{formatCurrency(comparison.portfolio_change.value_change)}
-                </p>
-              </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bnc-card p-4">
+            <span className="text-[11px] text-bnc-textTer block mb-1">{t('performance.summary.startValue')}</span>
+            <p className="text-lg font-bold text-bnc-textPri">{fmt(comparison.snapshot1.total_value)}</p>
+            <span className="text-[10px] text-bnc-textTer">{fmtDate(comparison.snapshot1.date)}</span>
+          </div>
+          <div className="bnc-card p-4">
+            <span className="text-[11px] text-bnc-textTer block mb-1">{t('performance.summary.endValue')}</span>
+            <p className="text-lg font-bold text-bnc-textPri">{fmt(comparison.snapshot2.total_value)}</p>
+            <span className="text-[10px] text-bnc-textTer">{fmtDate(comparison.snapshot2.date)}</span>
+          </div>
+          <div className="bnc-card p-4">
+            <span className="text-[11px] text-bnc-textTer block mb-1">{t('performance.summary.totalInvestment')}</span>
+            <p className="text-lg font-bold text-bnc-textPri">{fmt(comparison.snapshot2.total_cost)}</p>
+          </div>
+          <div className={`bnc-card p-4 ${isPositive ? 'border-bnc-green/30' : 'border-bnc-red/30'}`}>
+            <span className="text-[11px] text-bnc-textTer block mb-1">{t('performance.summary.valueChange')}</span>
+            <p className={`text-lg font-bold ${isPositive ? 'text-bnc-green' : 'text-bnc-red'}`}>
+              {isPositive ? '+' : ''}{change.value_change_pct.toFixed(2)}%
+            </p>
+            <span className={`text-[10px] font-medium ${isPositive ? 'text-bnc-green' : 'text-bnc-red'}`}>
+              {isPositive ? '+' : ''}{fmt(change.value_change)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Date Selection */}
+      <div className="bnc-card p-4">
+        {/* Presets */}
+        <div className="flex items-center gap-2 mb-4">
+          <div className="flex gap-1 flex-wrap">
+            {PRESETS.map(p => (
+              <button key={p.key} onClick={() => applyPreset(p.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  activePreset === p.key
+                    ? 'bg-bnc-accent text-bnc-bg'
+                    : 'bg-bnc-surfaceAlt text-bnc-textTer hover:bg-bnc-border hover:text-bnc-textSec'
+                }`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Calendars */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-bnc-textSec">{t('performance.dateRange.start')}</span>
+              {snap1Info && <span className="text-[11px] text-bnc-accent font-medium">{fmtDate(snap1Info.snapshot_date)}</span>}
             </div>
+            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot1} onSelectSnapshot={handleSelectSnapshot1} />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-bnc-textSec">{t('performance.dateRange.end')}</span>
+              {snap2Info && <span className="text-[11px] text-bnc-accent font-medium">{fmtDate(snap2Info.snapshot_date)}</span>}
+            </div>
+            <SnapshotCalendar snapshots={snapshots} selectedSnapshot={selectedSnapshot2} onSelectSnapshot={handleSelectSnapshot2} />
+          </div>
+        </div>
+      </div>
+
+      {/* Chart */}
+      {comparison && (
+        <div className="bnc-card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-bnc-textPri flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-bnc-accent" />
+              {t('performance.chart.title')}
+            </h2>
+            <select value={selectedInstrument} onChange={(e) => setSelectedInstrument(e.target.value)}
+              className="bnc-input text-xs py-1.5 pr-8">
+              <option value="ALL">{t('performance.chart.wholePortfolio')}</option>
+              {comparison.instruments.map(inst => (
+                <option key={inst.instrument_id} value={inst.instrument_id}>{inst.symbol}</option>
+              ))}
+            </select>
           </div>
 
-          {/* Grafik */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 mb-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-base font-semibold text-gray-900 dark:text-white">📈 Performans Grafiği</h2>
-              <select
-                value={selectedInstrument}
-                onChange={(e) => setSelectedInstrument(e.target.value)}
-                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-              >
-                <option value="ALL">🏦 Tüm Portföy</option>
-                {comparison.instruments.map(inst => (
-                  <option key={inst.instrument_id} value={inst.instrument_id}>{inst.symbol} - {inst.name}</option>
+          <ResponsiveContainer width="100%" height={280}>
+            <LineChart data={chartData} margin={{ top: 5, right: 15, left: 0, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#2B3139" />
+              <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#848E9C' }} axisLine={{ stroke: '#2B3139' }} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: '#848E9C' }} axisLine={false} tickLine={false}
+                tickFormatter={v => v >= 1e6 ? `${(v/1e6).toFixed(1)}M` : v >= 1e3 ? `${(v/1e3).toFixed(0)}K` : `${v}`} />
+              <Tooltip contentStyle={{ backgroundColor: '#1E2329', border: '1px solid #2B3139', borderRadius: '8px', color: '#EAECEF' }}
+                formatter={(v, name) => [fmtFull(v), name]} />
+              <Legend wrapperStyle={{ color: '#B7BDC6', fontSize: '12px' }} />
+              <Line type="monotone" dataKey="value" stroke="#F0B90B" strokeWidth={2.5}
+                dot={{ fill: '#F0B90B', r: 5, strokeWidth: 0 }} name={selectedInstrument === 'ALL' ? t('performance.chart.portfolioValue') : t('performance.chart.value')} />
+              {selectedInstrument === 'ALL' && (
+                <Line type="monotone" dataKey="investment" stroke="#0ECB81" strokeWidth={2} strokeDasharray="5 5"
+                  dot={{ fill: '#0ECB81', r: 4 }} name={t('performance.chart.totalInvestment')} />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+
+          {selectedInstrument !== 'ALL' && (() => {
+            const inst = comparison.instruments.find(i => i.instrument_id === parseInt(selectedInstrument));
+            if (!inst) return null;
+            const qtyChange = inst.current_quantity - inst.previous_quantity;
+            return (
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: t('performance.instrumentDetail.priceChange'), value: `${inst.price_change_pct >= 0 ? '+' : ''}${inst.price_change_pct.toFixed(2)}%`, sub: `${fmt(inst.previous_price)} → ${fmt(inst.current_price)}`, positive: inst.price_change_pct >= 0 },
+                  { label: t('performance.instrumentDetail.valueChange'), value: `${inst.value_change_pct >= 0 ? '+' : ''}${inst.value_change_pct.toFixed(2)}%`, sub: `${fmt(inst.previous_value)} → ${fmt(inst.current_value)}`, positive: inst.value_change_pct >= 0 },
+                  { label: t('performance.instrumentDetail.quantityChange'), value: `${qtyChange >= 0 ? '+' : ''}${qtyChange.toFixed(2)}`, sub: `${inst.previous_quantity.toFixed(2)} → ${inst.current_quantity.toFixed(2)}`, positive: qtyChange >= 0 },
+                  { label: t('performance.instrumentDetail.avgCost'), value: fmt(inst.current_avg_cost || 0), sub: `${t('performance.instrumentDetail.previous')} ${fmt(inst.previous_avg_cost || 0)}`, positive: null },
+                ].map(item => (
+                  <div key={item.label} className="bg-bnc-bg rounded-lg p-3 border border-bnc-border">
+                    <span className="text-[11px] text-bnc-textTer block mb-1">{item.label}</span>
+                    <p className={`text-base font-bold ${item.positive === null ? 'text-bnc-textPri' : item.positive ? 'text-bnc-green' : 'text-bnc-red'}`}>
+                      {item.value}
+                    </p>
+                    <span className="text-[10px] text-bnc-textTer">{item.sub}</span>
+                  </div>
                 ))}
-              </select>
-            </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={prepareChartData()} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="date" stroke="#9CA3AF" style={{ fontSize: '12px' }} />
-                <YAxis stroke="#9CA3AF" style={{ fontSize: '11px' }} tickFormatter={(v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M ₺` : v >= 1000 ? `${(v / 1000).toFixed(0)}K ₺` : `${v.toFixed(0)} ₺`} />
-                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px', color: '#F9FAFB' }} formatter={(value, name) => [formatCurrency(value), name]} />
-                <Legend />
-                <Line type="monotone" dataKey="value" stroke="#3B82F6" strokeWidth={3} dot={{ fill: '#3B82F6', r: 6 }} name={selectedInstrument === 'ALL' ? 'Portföy Değeri' : 'Enstrüman Değeri'} />
-                {selectedInstrument === 'ALL' && (
-                  <Line type="monotone" dataKey="investment" stroke="#10B981" strokeWidth={2} strokeDasharray="5 5" dot={{ fill: '#10B981', r: 5 }} name="Toplam Yatırım" />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
+      {/* Existing Instruments Table */}
+      {comparison && existingInstruments.length > 0 && (
+        <div className="bnc-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-bnc-border flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-bnc-textPri">{t('performance.table.title')}</h2>
+            <span className="text-[11px] text-bnc-textTer">{existingInstruments.length} {t('performance.table.instrumentSuffix')}</span>
+          </div>
 
-            {selectedInstrument !== 'ALL' && (() => {
-              const inst = comparison.instruments.find(i => i.instrument_id === parseInt(selectedInstrument));
-              if (!inst) return null;
+          <div className="hidden sm:block overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="bg-bnc-surfaceAlt/50">
+                  <SortHeader field="symbol" label={t('performance.table.column.instrument')} align="left" />
+                  <SortHeader field="previous_price" label={t('performance.table.column.previousPrice')} />
+                  <SortHeader field="current_price" label={t('performance.table.column.currentPrice')} />
+                  <SortHeader field="price_change_pct" label={t('performance.table.column.pricePct')} />
+                  <SortHeader field="previous_value" label={t('performance.table.column.previousValue')} />
+                  <SortHeader field="current_value" label={t('performance.table.column.currentValue')} />
+                  <SortHeader field="value_change_pct" label={t('performance.table.column.valuePct')} />
+                  <SortHeader field="quantity_change" label={t('performance.table.column.quantity')} />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-bnc-border">
+                {existingInstruments.map((inst) => {
+                  const qtyChange = inst.current_quantity - inst.previous_quantity;
+                  return (
+                    <tr key={inst.instrument_id} className="hover:bg-bnc-surfaceAlt/40 transition-colors">
+                      <td className="px-3 py-2.5">
+                        <span className="text-xs font-medium text-bnc-textPri">{inst.symbol}</span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-xs text-bnc-textSec">{fmt(inst.previous_price)}</td>
+                      <td className="px-3 py-2.5 text-right text-xs text-bnc-textPri font-medium">{fmt(inst.current_price)}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`inline-flex items-center text-xs font-semibold ${inst.price_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+                          {inst.price_change_pct >= 0 ? <TrendingUp className="w-3 h-3 mr-0.5" /> : <TrendingDown className="w-3 h-3 mr-0.5" />}
+                          {inst.price_change_pct >= 0 ? '+' : ''}{inst.price_change_pct.toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-xs text-bnc-textSec">{fmt(inst.previous_value)}</td>
+                      <td className="px-3 py-2.5 text-right text-xs text-bnc-textPri font-medium">{fmt(inst.current_value)}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`inline-flex items-center text-xs font-semibold ${inst.value_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+                          {inst.value_change_pct >= 0 ? '+' : ''}{inst.value_change_pct.toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`text-xs font-medium ${qtyChange > 0 ? 'text-bnc-green' : qtyChange < 0 ? 'text-bnc-red' : 'text-bnc-textTer'}`}>
+                          {qtyChange > 0 ? '+' : ''}{qtyChange.toFixed(2)}
+                        </span>
+                        <span className="text-[10px] text-bnc-textTer block">{inst.previous_quantity.toFixed(2)} → {inst.current_quantity.toFixed(2)}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="sm:hidden divide-y divide-bnc-border">
+            {existingInstruments.map((inst) => {
               const qtyChange = inst.current_quantity - inst.previous_quantity;
               return (
-                <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                  <div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded border border-blue-200 dark:border-blue-700">
-                    <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-1">💰 Fiyat Değişimi</p>
-                    <p className={`text-lg font-bold ${inst.price_change_pct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                      {inst.price_change_pct >= 0 ? '+' : ''}{inst.price_change_pct.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">{formatCurrency(inst.previous_price)} → {formatCurrency(inst.current_price)}</p>
-                  </div>
-                  <div className="bg-purple-50 dark:bg-purple-900/30 p-3 rounded border border-purple-200 dark:border-purple-700">
-                    <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-1">📊 Değer Değişimi</p>
-                    <p className={`text-lg font-bold ${inst.value_change_pct >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                <div key={inst.instrument_id} className="p-3 hover:bg-bnc-surfaceAlt/40">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-medium text-bnc-textPri">{inst.symbol}</span>
+                    <span className={`text-xs font-semibold ${inst.value_change_pct >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
                       {inst.value_change_pct >= 0 ? '+' : ''}{inst.value_change_pct.toFixed(2)}%
-                    </p>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">{formatCurrency(inst.previous_value)} → {formatCurrency(inst.current_value)}</p>
+                    </span>
                   </div>
-                  <div className="bg-green-50 dark:bg-green-900/30 p-3 rounded border border-green-200 dark:border-green-700">
-                    <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-1">📦 Adet Değişimi</p>
-                    <p className={`text-lg font-bold ${qtyChange >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                      {qtyChange >= 0 ? '+' : ''}{qtyChange.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">{inst.previous_quantity.toFixed(2)} → {inst.current_quantity.toFixed(2)}</p>
-                  </div>
-                  <div className="bg-orange-50 dark:bg-orange-900/30 p-3 rounded border border-orange-200 dark:border-orange-700">
-                    <p className="text-xs font-medium text-gray-700 dark:text-gray-200 mb-1">💵 Ort. Maliyet</p>
-                    <p className="text-lg font-bold text-gray-900 dark:text-white">{formatCurrency(inst.current_avg_cost || 0)}</p>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">Önceki: {formatCurrency(inst.previous_avg_cost || 0)}</p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-bnc-textTer">
+                    <span>{t('performance.table.mobile.price')} {fmt(inst.previous_price)} → {fmt(inst.current_price)}</span>
+                    <span>{t('performance.table.mobile.value')} {fmt(inst.previous_value)} → {fmt(inst.current_value)}</span>
+                    {qtyChange !== 0 && <span>{t('performance.table.mobile.quantity')} {qtyChange > 0 ? '+' : ''}{qtyChange.toFixed(2)}</span>}
                   </div>
                 </div>
               );
-            })()}
+            })}
           </div>
+        </div>
+      )}
 
-          {/* Enstrüman Tablosu */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
-            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-              <h2 className="text-base font-semibold text-gray-900 dark:text-white">📈 Enstrüman Bazlı Performans</h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                <thead className="bg-gray-50 dark:bg-gray-800">
-                  <tr>
-                    <SortHeader field="symbol" label="Enstrüman" align="left" />
-                    <SortHeader field="previous_price" label="Önceki Fiyat" />
-                    <SortHeader field="current_price" label="Güncel Fiyat" />
-                    <SortHeader field="price_change_pct" label="Fiyat Değişimi" />
-                    <SortHeader field="previous_value" label="Önceki Değer" />
-                    <SortHeader field="current_value" label="Güncel Değer" />
-                    <SortHeader field="value_change_pct" label="Değer Değişimi" />
-                    <SortHeader field="quantity_change" label="Miktar Değişimi" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {getSortedInstruments().map((inst) => {
-                    const qtyChange = inst.current_quantity - inst.previous_quantity;
-                    return (
-                      <tr key={inst.instrument_id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="text-sm font-medium text-gray-900 dark:text-white">{inst.symbol}</div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">{inst.name}</div>
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-900 dark:text-white">{formatCurrency(inst.previous_price)}</td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-900 dark:text-white">{formatCurrency(inst.current_price)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={`inline-flex items-center text-sm font-medium ${inst.price_change_pct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {inst.price_change_pct >= 0 ? <TrendingUp className="w-3.5 h-3.5 mr-1" /> : <TrendingDown className="w-3.5 h-3.5 mr-1" />}
-                            {inst.price_change_pct >= 0 ? '+' : ''}{inst.price_change_pct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-900 dark:text-white">{formatCurrency(inst.previous_value)}</td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-900 dark:text-white">{formatCurrency(inst.current_value)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={`inline-flex items-center text-sm font-medium ${inst.value_change_pct >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {inst.value_change_pct >= 0 ? <TrendingUp className="w-3.5 h-3.5 mr-1" /> : <TrendingDown className="w-3.5 h-3.5 mr-1" />}
-                            {inst.value_change_pct >= 0 ? '+' : ''}{inst.value_change_pct.toFixed(2)}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm">
-                          <div className={`font-medium ${qtyChange > 0 ? 'text-green-600' : qtyChange < 0 ? 'text-red-600' : 'text-gray-500'}`}>
-                            {qtyChange > 0 ? '+' : ''}{qtyChange.toFixed(2)}
-                          </div>
-                          <div className="text-xs text-gray-500">{inst.previous_quantity.toFixed(2)} → {inst.current_quantity.toFixed(2)}</div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+      {/* New Instruments */}
+      {comparison && newInstruments.length > 0 && (
+        <div className="bnc-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-bnc-border flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-bnc-green" />
+            <h2 className="text-sm font-semibold text-bnc-textPri flex-1">{t('performance.sections.added')}</h2>
+            <span className="text-[11px] text-bnc-textTer">{newInstruments.length} {t('performance.table.instrumentSuffix')}</span>
           </div>
-        </>
+          <div className="divide-y divide-bnc-border">
+            {newInstruments.map((inst) => (
+              <div key={inst.instrument_id} className="px-4 py-2.5 flex items-center hover:bg-bnc-surfaceAlt/40 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-medium text-bnc-textPri">{inst.symbol}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-semibold text-bnc-textPri">{fmt(inst.current_value)}</span>
+                  <span className="text-[10px] text-bnc-textTer block">{(inst.current_quantity ?? 0).toFixed(2)} {t('performance.sections.unitsSuffix')}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sold Instruments */}
+      {comparison && soldInstruments.length > 0 && (
+        <div className="bnc-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-bnc-border flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-bnc-red" />
+            <h2 className="text-sm font-semibold text-bnc-textPri flex-1">{t('performance.sections.removed')}</h2>
+            <span className="text-[11px] text-bnc-textTer">{soldInstruments.length} {t('performance.table.instrumentSuffix')}</span>
+          </div>
+          <div className="divide-y divide-bnc-border">
+            {soldInstruments.map((inst) => (
+              <div key={inst.instrument_id} className="px-4 py-2.5 flex items-center hover:bg-bnc-surfaceAlt/40 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-medium text-bnc-textPri">{inst.symbol}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-semibold text-bnc-textSec">{fmt(inst.previous_value)}</span>
+                  <span className="text-[10px] text-bnc-textTer block">{(inst.previous_quantity ?? 0).toFixed(2)} {t('performance.sections.unitsSuffix')}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
