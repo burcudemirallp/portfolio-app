@@ -17,6 +17,7 @@ const ComparisonPage = lazy(() => import('./components/ComparisonPage'));
 const SalesHistoryPage = lazy(() => import('./components/SalesHistoryPage'));
 const CashFlowsPage = lazy(() => import('./components/CashFlowsPage'));
 const InsightsPage = lazy(() => import('./components/InsightsPage'));
+const FundTrackerPage = lazy(() => import('./components/FundTrackerPage'));
 
 function App() {
   const { user, loading: authLoading } = useAuth();
@@ -144,6 +145,7 @@ function App() {
         <Route path="sales" element={<Suspense fallback={suspenseFallback}><SalesHistoryPage /></Suspense>} />
         <Route path="cash-flows" element={<Suspense fallback={suspenseFallback}><CashFlowsPage /></Suspense>} />
         <Route path="insights" element={<Suspense fallback={suspenseFallback}><InsightsPage /></Suspense>} />
+        <Route path="fund-tracker" element={<Suspense fallback={suspenseFallback}><FundTrackerPage /></Suspense>} />
         <Route path="settings" element={<Suspense fallback={suspenseFallback}><SettingsPage /></Suspense>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

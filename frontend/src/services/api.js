@@ -136,3 +136,15 @@ export const getUnreadCount = () => api.get('/notifications/unread-count');
 export const markNotificationRead = (id, isRead = true) => api.patch(`/notifications/${id}/read`, { is_read: isRead });
 export const markAllNotificationsRead = () => api.patch('/notifications/read-all');
 export const deleteNotification = (id) => api.delete(`/notifications/${id}`);
+
+// Fund Tracker (Fon Takip)
+export const getFundTrackerStatus = () => api.get('/fund-tracker/status');
+export const getFundTrackerScores = () => api.get('/fund-tracker/scores');
+export const getFundTrackerSignals = (ticker = null, limit = 50) => api.get(`/fund-tracker/signals`, { params: { ticker, limit } });
+export const getFundTrackerPortfolio = (fundCode) => api.get(`/fund-tracker/portfolio/${fundCode}`);
+export const getFundTrackerChanges = (fundCode = null, limit = 50) => api.get('/fund-tracker/changes', { params: { fund_code: fundCode, limit } });
+export const getFundTrackerFunds = () => api.get('/fund-tracker/funds');
+export const getFundTrackerPriceHistory = (ticker, days = 90) => api.get(`/fund-tracker/price-history/${ticker}`, { params: { days } });
+export const runFundTrackerPipeline = () => api.post('/fund-tracker/run-pipeline', {}, { timeout: 60000 });
+export const refreshFundTrackerPrices = () => api.post('/fund-tracker/refresh-prices');
+export const refreshFundTrackerSignals = () => api.post('/fund-tracker/refresh-signals');

@@ -19,6 +19,8 @@ function TWRPage() {
   const [periodsOpen, setPeriodsOpen] = useState(false);
   const [expandedPeriod, setExpandedPeriod] = useState(null);
   const [detailPeriod, setDetailPeriod] = useState('ALL');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   const CHART_PERIODS = useMemo(() => [
     { key: '7D', label: t('twr.periods.7d'), days: 7 },
@@ -54,13 +56,23 @@ function TWRPage() {
 
   const filteredPeriods = useMemo(() => {
     if (!data?.periods?.length) return [];
+    if (startDate || endDate) {
+      let filtered = data.periods;
+      if (startDate) filtered = filtered.filter(p => new Date(p.to_date) >= new Date(startDate));
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filtered = filtered.filter(p => new Date(p.from_date) <= end);
+      }
+      return filtered;
+    }
     if (chartPeriod === 'ALL') return data.periods;
     const preset = CHART_PERIODS.find(p => p.key === chartPeriod);
     if (!preset) return data.periods;
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - preset.days);
     return data.periods.filter(p => new Date(p.to_date) >= cutoff);
-  }, [data, chartPeriod]);
+  }, [data, chartPeriod, startDate, endDate]);
 
   const cumulativeChartData = useMemo(() => {
     if (!filteredPeriods.length) return [];
@@ -105,12 +117,44 @@ function TWRPage() {
     return items;
   }, [filteredPeriods]);
 
-  const periodTWR = useMemo(() => {
-    if (!filteredPeriods.length) return 0;
-    let cum = 1.0;
-    filteredPeriods.forEach(p => { cum *= (1 + p.period_return / 100); });
-    return (cum - 1) * 100;
-  }, [filteredPeriods]);
+  const isFiltered = !!(startDate || endDate) || chartPeriod !== 'ALL';
+
+  const display = useMemo(() => {
+    if (isFiltered && filteredPeriods.length) {
+      let cum = 1.0;
+      filteredPeriods.forEach(p => { cum *= (1 + p.period_return / 100); });
+      const twr = (cum - 1) * 100;
+      const first = filteredPeriods[0];
+      const last = filteredPeriods[filteredPeriods.length - 1];
+      const totalDays = Math.max(1, Math.round((new Date(last.to_date) - new Date(first.from_date)) / 86400000));
+      let annualized = 0;
+      if (totalDays > 0 && cum > 0) annualized = (Math.pow(cum, 365.0 / totalDays) - 1) * 100;
+      let cashIn = 0, cashOut = 0, cfCount = 0;
+      if (data?.cash_flows?.length) {
+        const rs = new Date(first.from_date), re = new Date(last.to_date);
+        data.cash_flows.forEach(cf => {
+          const d = new Date(cf.date);
+          if (d > rs && d <= re) {
+            cfCount++;
+            if (cf.flow_type === 'inflow') cashIn += cf.amount_try; else cashOut += cf.amount_try;
+          }
+        });
+      }
+      return { twr, annualized, totalDays, snapshotCount: filteredPeriods.length + 1,
+        firstValue: first.beginning_value, lastValue: last.ending_value,
+        firstDate: first.from_date, lastDate: last.to_date,
+        netCash: cashIn - cashOut, cashIn, cashOut, cfCount };
+    }
+    return {
+      twr: data?.twr ?? 0, annualized: data?.twr_annualized ?? 0,
+      totalDays: data?.total_days ?? 0, snapshotCount: data?.snapshot_count ?? 0,
+      firstValue: data?.first_snapshot_value ?? 0, lastValue: data?.last_snapshot_value ?? 0,
+      firstDate: data?.first_snapshot_date, lastDate: data?.last_snapshot_date,
+      netCash: (data?.total_cash_inflow || 0) - (data?.total_cash_outflow || 0),
+      cashIn: data?.total_cash_inflow || 0, cashOut: data?.total_cash_outflow || 0,
+      cfCount: data?.cash_flow_count ?? 0,
+    };
+  }, [isFiltered, filteredPeriods, data]);
 
   const reversedPeriods = useMemo(() => {
     if (!data?.periods) return [];
@@ -127,17 +171,35 @@ function TWRPage() {
   }, [data, detailPeriod]);
 
   const PeriodPills = () => (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5 flex-wrap">
       {CHART_PERIODS.map(p => (
-        <button key={p.key} onClick={() => setChartPeriod(p.key)}
+        <button key={p.key} onClick={() => { setChartPeriod(p.key); setStartDate(''); setEndDate(''); }}
           className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
-            chartPeriod === p.key
+            chartPeriod === p.key && !startDate && !endDate
               ? 'bg-bnc-accent/15 text-bnc-accent'
               : 'text-bnc-textTer hover:bg-bnc-surfaceAlt'
           }`}>
           {p.label}
         </button>
       ))}
+      <span className="text-bnc-border mx-0.5">|</span>
+      <input type="date" value={startDate}
+        onChange={(e) => { setStartDate(e.target.value); if (e.target.value) setChartPeriod('CUSTOM'); }}
+        className="bg-bnc-surfaceAlt text-bnc-textPri text-[11px] px-2 py-1 rounded-lg border border-bnc-border focus:border-bnc-accent outline-none w-[118px] [color-scheme:dark]"
+        title={t('twr.filter.startDate')}
+      />
+      <span className="text-bnc-textTer text-[10px]">–</span>
+      <input type="date" value={endDate}
+        onChange={(e) => { setEndDate(e.target.value); if (e.target.value) setChartPeriod('CUSTOM'); }}
+        className="bg-bnc-surfaceAlt text-bnc-textPri text-[11px] px-2 py-1 rounded-lg border border-bnc-border focus:border-bnc-accent outline-none w-[118px] [color-scheme:dark]"
+        title={t('twr.filter.endDate')}
+      />
+      {(startDate || endDate) && (
+        <button onClick={() => { setStartDate(''); setEndDate(''); setChartPeriod('ALL'); }}
+          className="px-2 py-1 rounded-lg text-[11px] font-semibold text-bnc-red hover:bg-bnc-red/10 transition-colors">
+          {t('twr.filter.reset')}
+        </button>
+      )}
     </div>
   );
 
@@ -172,8 +234,6 @@ function TWRPage() {
     );
   }
 
-  const netCash = (data.total_cash_inflow || 0) - (data.total_cash_outflow || 0);
-
   return (
     <div className="max-w-7xl mx-auto space-y-4 text-bnc-textPri">
       {/* Ana Kartlar */}
@@ -183,8 +243,8 @@ function TWRPage() {
             <TrendingUp className="w-3.5 h-3.5 text-bnc-accent" />
             <p className="text-[11px] text-bnc-textSec">{t('twr.cards.totalReturn')}</p>
           </div>
-          <p className={`text-xl font-bold ${data.twr >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-            {data.twr >= 0 ? '+' : ''}{data.twr.toFixed(2)}%
+          <p className={`text-xl font-bold ${display.twr >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+            {display.twr >= 0 ? '+' : ''}{display.twr.toFixed(2)}%
           </p>
         </div>
 
@@ -193,8 +253,8 @@ function TWRPage() {
             <BarChart3 className="w-3.5 h-3.5 text-bnc-textTer" />
             <p className="text-[11px] text-bnc-textSec">{t('twr.cards.annualReturn')}</p>
           </div>
-          <p className={`text-xl font-bold ${data.twr_annualized >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-            {data.twr_annualized >= 0 ? '+' : ''}{data.twr_annualized.toFixed(2)}%
+          <p className={`text-xl font-bold ${display.annualized >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+            {display.annualized >= 0 ? '+' : ''}{display.annualized.toFixed(2)}%
           </p>
         </div>
 
@@ -203,8 +263,8 @@ function TWRPage() {
             <Calendar className="w-3.5 h-3.5 text-bnc-textTer" />
             <p className="text-[11px] text-bnc-textSec">{t('twr.cards.measurementPeriod')}</p>
           </div>
-          <p className="text-xl font-bold text-bnc-textPri">{data.total_days} {t('twr.cards.daysSuffix')}</p>
-          <p className="text-[10px] text-bnc-textTer">{data.snapshot_count} {t('twr.cards.snapshotsSuffix')}</p>
+          <p className="text-xl font-bold text-bnc-textPri">{display.totalDays} {t('twr.cards.daysSuffix')}</p>
+          <p className="text-[10px] text-bnc-textTer">{display.snapshotCount} {t('twr.cards.snapshotsSuffix')}</p>
         </div>
 
         <div className="bnc-card p-3.5">
@@ -212,18 +272,18 @@ function TWRPage() {
             <DollarSign className="w-3.5 h-3.5 text-bnc-green" />
             <p className="text-[11px] text-bnc-textSec">{t('twr.cards.netCashFlow')}</p>
           </div>
-          {data.cash_flow_count === 0 ? (
+          {display.cfCount === 0 ? (
             <>
               <p className="text-xl font-bold text-bnc-textPri">—</p>
               <p className="text-[10px] text-bnc-textTer">{t('twr.cards.noRecords')}</p>
             </>
           ) : (
             <>
-              <p className={`text-xl font-bold ${netCash >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                {formatCurrency(netCash)}
+              <p className={`text-xl font-bold ${display.netCash >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+                {formatCurrency(display.netCash)}
               </p>
               <p className="text-[10px] text-bnc-textTer">
-                {t('twr.cards.inflowPrefix')} {formatCurrency(data.total_cash_inflow)}{(data.total_cash_outflow || 0) > 0 ? ` ${t('twr.cards.outflowSeparator')} ${formatCurrency(data.total_cash_outflow)}` : ''}
+                {t('twr.cards.inflowPrefix')} {formatCurrency(display.cashIn)}{display.cashOut > 0 ? ` ${t('twr.cards.outflowSeparator')} ${formatCurrency(display.cashOut)}` : ''}
               </p>
             </>
           )}
@@ -235,22 +295,22 @@ function TWRPage() {
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-[11px] text-bnc-textSec">{t('twr.range.firstSnapshot')}</p>
-            <p className="text-base font-semibold text-bnc-textPri">{formatCurrency(data.first_snapshot_value)}</p>
-            <p className="text-[10px] text-bnc-textTer">{data.first_snapshot_date ? formatDate(data.first_snapshot_date) : '-'}</p>
+            <p className="text-base font-semibold text-bnc-textPri">{formatCurrency(display.firstValue)}</p>
+            <p className="text-[10px] text-bnc-textTer">{display.firstDate ? formatDate(display.firstDate) : '-'}</p>
           </div>
           <div className="flex-1 mx-4 min-w-0">
             <div className="h-1.5 bg-bnc-surfaceAlt rounded-full relative overflow-hidden">
               <div
-                className={`h-full rounded-full ${data.twr >= 0 ? 'bg-gradient-to-r from-bnc-accent to-bnc-green' : 'bg-gradient-to-r from-bnc-red to-bnc-accent'}`}
-                style={{ width: `${Math.min(100, Math.max(5, 50 + data.twr))}%` }}
+                className={`h-full rounded-full ${display.twr >= 0 ? 'bg-gradient-to-r from-bnc-accent to-bnc-green' : 'bg-gradient-to-r from-bnc-red to-bnc-accent'}`}
+                style={{ width: `${Math.min(100, Math.max(5, 50 + display.twr))}%` }}
               />
             </div>
-            <p className="text-center text-[11px] text-bnc-textSec mt-1">{data.twr >= 0 ? '+' : ''}{data.twr.toFixed(2)}% {t('twr.range.returnSuffix')}</p>
+            <p className="text-center text-[11px] text-bnc-textSec mt-1">{display.twr >= 0 ? '+' : ''}{display.twr.toFixed(2)}% {t('twr.range.returnSuffix')}</p>
           </div>
           <div className="text-right">
             <p className="text-[11px] text-bnc-textSec">{t('twr.range.lastSnapshot')}</p>
-            <p className="text-base font-semibold text-bnc-textPri">{formatCurrency(data.last_snapshot_value)}</p>
-            <p className="text-[10px] text-bnc-textTer">{data.last_snapshot_date ? formatDate(data.last_snapshot_date) : '-'}</p>
+            <p className="text-base font-semibold text-bnc-textPri">{formatCurrency(display.lastValue)}</p>
+            <p className="text-[10px] text-bnc-textTer">{display.lastDate ? formatDate(display.lastDate) : '-'}</p>
           </div>
         </div>
       </div>
@@ -259,11 +319,11 @@ function TWRPage() {
       {data.periods?.length > 1 && (
         <div className="bnc-card p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <PeriodPills />
-          {chartPeriod !== 'ALL' && filteredPeriods.length > 0 && (
+          {isFiltered && filteredPeriods.length > 0 && (
             <div className="flex items-center gap-3 text-xs">
               <span className="text-bnc-textTer">{filteredPeriods.length} {t('twr.filtered.periodsSuffix')}</span>
-              <span className={`font-bold ${periodTWR >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
-                {periodTWR >= 0 ? '+' : ''}{periodTWR.toFixed(2)}%
+              <span className={`font-bold ${display.twr >= 0 ? 'text-bnc-green' : 'text-bnc-red'}`}>
+                {display.twr >= 0 ? '+' : ''}{display.twr.toFixed(2)}%
               </span>
             </div>
           )}
