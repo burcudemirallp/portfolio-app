@@ -364,6 +364,13 @@ class ScannerBistEmaRequest(BaseModel):
     use_my_instruments: bool = False  # True = sadece portföydeki BIST hisseleri
 
 
+class ScannerBistVolumeRequest(BaseModel):
+    """BIST hacim tarama isteği"""
+    symbols: Optional[list[str]] = None
+    min_ratio: float = 1.5
+    lookback_days: int = 5
+
+
 # === Bildirim ===
 
 class NotificationCreate(BaseModel):

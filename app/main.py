@@ -788,6 +788,11 @@ def portfolio_summary(
                     secondary_tags = tx.secondary_tags
                     
             elif tx.type == "sell":
+                if total_buy_qty > 0:
+                    avg = total_buy_cost / total_buy_qty
+                    sold_cost = avg * tx.quantity
+                    total_buy_cost -= sold_cost
+                    total_buy_qty -= tx.quantity
                 net_qty -= tx.quantity
         
         if net_qty <= 0:
@@ -1599,6 +1604,29 @@ def run_bist_ema_scan(
         "criteria": f"Fiyat > EMA {', '.join(map(str, ema_periods))}",
         "count": len(results),
         "source": source,
+        "results": results,
+    }
+
+
+@app.post("/scanner/bist-volume")
+def run_bist_volume_scan(
+    body: Optional[schemas.ScannerBistVolumeRequest] = None,
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    BIST hisselerinde hacim artışı taraması.
+    Hacim Oranı = Son Günün Hacmi / 20 Günlük Ortalama Hacim
+    """
+    from app.services.scanner import scan_bist_volume
+    req = body or schemas.ScannerBistVolumeRequest()
+    symbols = req.symbols or None  # None = tüm BIST (bigpara'dan dinamik)
+    min_ratio = req.min_ratio
+    lookback_days = req.lookback_days
+    results = scan_bist_volume(symbols=symbols, min_ratio=min_ratio, lookback_days=lookback_days)
+    return {
+        "criteria": f"Hacim Oranı >= {min_ratio}x (son {lookback_days} gün)",
+        "count": len(results),
+        "lookback_days": lookback_days,
         "results": results,
     }
 
@@ -3187,196 +3215,3 @@ def create_notification(
     return notification
 
 
-# ============= FON TAKİP VE ERKEN SİNYAL SİSTEMİ =============
-import os as _os
-import sys as _sys
-import sqlite3 as _sqlite3
-
-_TRADE_DIR = _os.path.normpath(_os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "..", "trade"))
-if not _os.path.isdir(_TRADE_DIR):
-    _TRADE_DIR = _os.path.expanduser("~/Desktop/trade")
-if _TRADE_DIR not in _sys.path:
-    _sys.path.insert(0, _TRADE_DIR)
-
-# DB portfolio-app/data/ içinde (web app ile aynı projede)
-_APP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-_FUND_DB = _os.path.join(_APP_ROOT, "data", "fund_tracker.db")
-
-
-def _fund_conn():
-    if not _os.path.exists(_FUND_DB):
-        raise HTTPException(status_code=503, detail="Fund tracker DB bulunamadı. Önce pipeline çalıştırın.")
-    c = _sqlite3.connect(_FUND_DB)
-    c.row_factory = _sqlite3.Row
-    return c
-
-
-@app.get("/fund-tracker/status")
-def ft_status():
-    exists = _os.path.exists(_FUND_DB)
-    info = {"active": exists, "ticker_count": 0, "signal_count": 0, "last_score_date": None}
-    if exists:
-        try:
-            c = _fund_conn()
-            info["ticker_count"] = c.execute("SELECT COUNT(DISTINCT ticker) FROM fund_portfolios").fetchone()[0]
-            info["signal_count"] = c.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
-            r = c.execute("SELECT MAX(score_date) FROM composite_scores").fetchone()
-            info["last_score_date"] = r[0] if r else None
-            c.close()
-        except Exception:
-            pass
-    return info
-
-
-@app.get("/fund-tracker/scores")
-def ft_scores():
-    c = _fund_conn()
-    rows = c.execute(
-        "SELECT * FROM composite_scores WHERE score_date=(SELECT MAX(score_date) FROM composite_scores) ORDER BY score DESC"
-    ).fetchall()
-    c.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/fund-tracker/signals")
-def ft_signals(ticker: str = None, limit: int = 50):
-    c = _fund_conn()
-    if ticker:
-        rows = c.execute("SELECT * FROM signals WHERE ticker=? ORDER BY signal_date DESC, id DESC LIMIT ?", (ticker, limit)).fetchall()
-    else:
-        rows = c.execute("SELECT * FROM signals ORDER BY signal_date DESC, id DESC LIMIT ?", (limit,)).fetchall()
-    c.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/fund-tracker/portfolio/{fund_code}")
-def ft_portfolio(fund_code: str):
-    c = _fund_conn()
-    row = c.execute("SELECT snapshot_date FROM fund_portfolios WHERE fund_code=? ORDER BY snapshot_date DESC LIMIT 1", (fund_code,)).fetchone()
-    if not row:
-        c.close()
-        return {"fund_code": fund_code, "snapshot_date": None, "holdings": []}
-    date = row[0]
-    holdings = c.execute("SELECT ticker, weight FROM fund_portfolios WHERE fund_code=? AND snapshot_date=? ORDER BY weight DESC", (fund_code, date)).fetchall()
-    c.close()
-    return {"fund_code": fund_code, "snapshot_date": date, "holdings": [dict(h) for h in holdings]}
-
-
-@app.get("/fund-tracker/changes")
-def ft_changes(fund_code: str = None, limit: int = 50):
-    c = _fund_conn()
-    if fund_code:
-        rows = c.execute("SELECT * FROM portfolio_changes WHERE fund_code=? ORDER BY detected_date DESC LIMIT ?", (fund_code, limit)).fetchall()
-    else:
-        rows = c.execute("SELECT * FROM portfolio_changes ORDER BY detected_date DESC LIMIT ?", (limit,)).fetchall()
-    c.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/fund-tracker/funds")
-def ft_funds():
-    c = _fund_conn()
-    funds = c.execute("SELECT DISTINCT fund_code FROM fund_portfolios ORDER BY fund_code").fetchall()
-    result = []
-    for f in funds:
-        code = f[0]
-        latest = c.execute(
-            "SELECT snapshot_date, COUNT(*) as cnt FROM fund_portfolios WHERE fund_code=? AND snapshot_date=(SELECT MAX(snapshot_date) FROM fund_portfolios WHERE fund_code=?) GROUP BY snapshot_date",
-            (code, code),
-        ).fetchone()
-        result.append({"fund_code": code, "latest_date": latest[0] if latest else None, "stock_count": latest[1] if latest else 0})
-    c.close()
-    return result
-
-
-@app.get("/fund-tracker/price-history/{ticker}")
-def ft_price_history(ticker: str, days: int = 90):
-    c = _fund_conn()
-    rows = c.execute("SELECT date, open, high, low, close, volume FROM stock_prices WHERE ticker=? ORDER BY date DESC LIMIT ?", (ticker, days)).fetchall()
-    c.close()
-    return [dict(r) for r in reversed(rows)]
-
-
-@app.post("/fund-tracker/run-pipeline")
-def ft_run_pipeline(background_tasks: BackgroundTasks):
-    def _run():
-        try:
-            prev = _os.getcwd()
-            _os.chdir(_TRADE_DIR)
-            if _TRADE_DIR not in _sys.path:
-                _sys.path.insert(0, _TRADE_DIR)
-            from db.database import init_db
-            from tracker.fintables_scraper import fetch_fund_portfolio
-            from tracker.portfolio_differ import diff_portfolios, detect_multi_fund_overlaps
-            from fetcher.price_fetcher import fetch_all_prices
-            from signals.composite_scorer import compute_all_scores
-            import config as tcfg
-            from db import database as tdb
-            init_db()
-            # 1. TEFAS fon skorlama (opsiyonel, hata durumunda devam et)
-            try:
-                from tracker.tefas_scraper import score_all_configured_funds
-                score_all_configured_funds()
-            except Exception:
-                pass
-            # 2. Portföy kontrolü
-            all_ch_flat, all_ch = [], {}
-            for fc, fi in tcfg.get_active_funds().items():
-                od, op = tdb.get_latest_portfolio(fc)
-                nd, nh = fetch_fund_portfolio(fc, fi["url"])
-                if not nh:
-                    dates = tdb.get_snapshot_dates(fc)
-                    if len(dates) >= 2:
-                        o = [{"ticker": p["ticker"], "weight": p["weight"]} for p in tdb.get_portfolio_by_date(fc, dates[-2])]
-                        n = [{"ticker": p["ticker"], "weight": p["weight"]} for p in tdb.get_portfolio_by_date(fc, dates[-1])]
-                        ch = diff_portfolios(fc, o, n, dates[-2], dates[-1])
-                        all_ch[fc] = ch; all_ch_flat.extend(ch)
-                    continue
-                sd = nd or datetime.now().strftime("%Y-%m-%d")
-                tdb.save_portfolio(fc, sd, nh)
-                if op:
-                    ch = diff_portfolios(fc, op, [{"ticker": t, "weight": w} for t, w in nh], od, sd)
-                    all_ch[fc] = ch; all_ch_flat.extend(ch)
-            overlaps = detect_multi_fund_overlaps(all_ch)
-            if all_ch_flat:
-                tdb.save_changes(all_ch_flat)
-            # 3. Fiyat güncellemesi (XU100 dahil)
-            fetch_all_prices()
-            # 4. Sinyal analizi (parametresiz - DB'den okur)
-            compute_all_scores()
-            _os.chdir(prev)
-        except Exception:
-            import traceback; traceback.print_exc()
-    background_tasks.add_task(_run)
-    return {"status": "started", "message": "Pipeline arka planda çalışıyor..."}
-
-
-@app.post("/fund-tracker/refresh-prices")
-def ft_refresh_prices(background_tasks: BackgroundTasks):
-    def _run():
-        try:
-            prev = _os.getcwd(); _os.chdir(_TRADE_DIR)
-            if _TRADE_DIR not in _sys.path: _sys.path.insert(0, _TRADE_DIR)
-            from db.database import init_db; from fetcher.price_fetcher import fetch_all_prices
-            init_db(); fetch_all_prices(); _os.chdir(prev)
-        except Exception:
-            import traceback; traceback.print_exc()
-    background_tasks.add_task(_run)
-    return {"status": "started"}
-
-
-@app.post("/fund-tracker/refresh-signals")
-def ft_refresh_signals(background_tasks: BackgroundTasks):
-    def _run():
-        try:
-            prev = _os.getcwd(); _os.chdir(_TRADE_DIR)
-            if _TRADE_DIR not in _sys.path: _sys.path.insert(0, _TRADE_DIR)
-            from db.database import init_db
-            from signals.composite_scorer import compute_all_scores
-            init_db()
-            compute_all_scores()  # parametresiz - DB'den okur
-            _os.chdir(prev)
-        except Exception:
-            import traceback; traceback.print_exc()
-    background_tasks.add_task(_run)
-    return {"status": "started"}

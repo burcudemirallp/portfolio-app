@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Briefcase, TrendingUp, Activity, Scale,
   History, Settings, LogOut, Menu, X,
   RefreshCw, ChevronDown, Plus, Camera, Download, DollarSign,
-  Bell, Check, CheckCheck, Trash2, Lightbulb, Radar,
+  Bell, Check, CheckCheck, Trash2, Lightbulb, BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -27,7 +27,7 @@ const navItems = [
   { to: '/sales', icon: History, labelKey: 'layout.nav.sales' },
   { to: '/cash-flows', icon: DollarSign, labelKey: 'layout.nav.cashFlows' },
   { to: '/insights', icon: Lightbulb, labelKey: 'layout.nav.insights' },
-  { to: '/fund-tracker', icon: Radar, labelKey: 'layout.nav.fundTracker' },
+  { to: '/volume-scanner', icon: BarChart3, labelKey: 'layout.nav.volumeScanner' },
   { to: '/settings', icon: Settings, labelKey: 'layout.nav.settings' },
 ];
 
